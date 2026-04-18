@@ -1,0 +1,31 @@
+# Build output
+build/
+Compile/
+Release/
+out/
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.sln
+*.vcxproj
+*.vcxproj.filters
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# vcpkg installed packages (fetched on configure)
+vcpkg_installed/
+
+# OS junk
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Debug symbols shipped separately
+*.pdb
