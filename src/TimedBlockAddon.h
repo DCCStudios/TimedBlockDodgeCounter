@@ -177,8 +177,45 @@ namespace Offsets
     inline REL::Relocation<bool (*)(RE::Actor*)> IsBlocking{ RELOCATION_ID(36927, 37952) };
 }
 
+// Per-frame snapshot of the player's health, taken at the END of
+// PlayerCharacter::UpdateAnimation. TESHitEvent fires AFTER the engine has
+// already subtracted damage, so subtracting current HP from this snapshot
+// tells us how much damage the just-processed hit dealt (used for both the
+// timed-dodge "real damage" cooldown and the parry-window HP restore).
+//
+// 1.0.2: introduced when CombatHit's Actor::DealDamage entry hook was removed
+// to eliminate trampoline conflicts with other parry/combat plugins.
+namespace PlayerHealthState
+{
+    inline float lastFrameHealth{ 0.0f };
+    inline bool  primed{ false };  // false until the first frame snapshot is taken
+}
+
 namespace CombatHit
 {
+    // 1.0.3: Install() is intentionally a no-op. The previous v1.0.1 build
+    // installed a 5-byte entry detour on Actor::DealDamage. That hook was
+    // overwritten/relocated by other SKSE plugins that hook the same entry
+    // (DualWieldParryingNG, etc.), and CommonLibSSE-NG's saved-prologue
+    // copy did not survive the chain — _original ended up pointing at an
+    // unmapped page, crashing on the next hit with EXCEPTION_ACCESS_VIOLATION
+    // at an unmapped PC.
+    //
+    // The functionality (parry HP prevention, real-damage cooldown,
+    // hit-during-dodge trigger) is now provided by TWO complementary paths,
+    // neither of which patches any engine bytes:
+    //
+    //   PRIMARY (when Precision is loaded): the plugin-wide PreHit callback
+    //     registered in WardTimedBlockState::RegisterPrecision now also
+    //     handles the regular parry window. ret.bIgnoreHit = true cancels
+    //     the hit at the Havok hitbox level — the engine never calls
+    //     DealDamage and the player takes 0 HP loss with no flicker.
+    //
+    //   FALLBACK (no Precision, or hits Precision didn't intercept): the
+    //     TESHitEvent handler in TimedBlockAddon::ProcessEvent restores the
+    //     post-hit HP delta using PlayerHealthState::lastFrameHealth, and
+    //     also handles the timed-dodge "real damage" cooldown for ranged
+    //     and other non-Precision hits.
     void Install();
 }
 

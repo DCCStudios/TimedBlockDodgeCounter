@@ -328,6 +328,17 @@ void AnimSpeedManager::PlayerAnimationHook::PlayerCharacter_UpdateAnimation(RE::
     
     AnimSpeedManager::Update(a_this->GetHandle(), a_deltaTime);
     _originalFunc(a_this, a_deltaTime);
+
+    // 1.0.2: snapshot player HP at the END of UpdateAnimation, so the
+    // TESHitEvent handler that fires later in the frame can compute the
+    // exact HP delta produced by a single hit. This replaces the
+    // before/after snapshot the removed CombatHit::Thunk used to do.
+    if (a_this) {
+        if (auto* avOwner = a_this->AsActorValueOwner()) {
+            PlayerHealthState::lastFrameHealth = avOwner->GetActorValue(RE::ActorValue::kHealth);
+            PlayerHealthState::primed = true;
+        }
+    }
 }
 
 void AnimSpeedManager::NPCAnimationHook::Install()
@@ -1023,12 +1034,36 @@ RE::BSEventNotifyControl TimedBlockAddon::ProcessEvent(
         return Result::kContinue;
     }
 
-    // Damage cooldown is handled in CombatHit::Thunk via health-delta verification,
-    // NOT here.  TESHitEvent fires even when dodge mods absorb the damage, so the
-    // kHitBlocked flag alone cannot distinguish real damage from i-framed hits.
-    
-    // Skip projectiles for timed block processing (ward timed block is melee-only)
+    // 1.0.2: damage-cooldown detection — used to live in CombatHit::Thunk via a
+    // before/after health snapshot wrapped around the original DealDamage call.
+    // That hook caused trampoline conflicts with other parry plugins, so we now
+    // reconstruct the same signal here from PlayerHealthState::lastFrameHealth
+    // (snapshotted at the end of every PlayerCharacter::UpdateAnimation) minus
+    // the current HP after the engine has already applied this hit's damage.
+    auto computePlayerDamageTaken = [&]() -> float {
+        if (!PlayerHealthState::primed) return 0.0f;
+        auto* avOwner = defender->AsActorValueOwner();
+        if (!avOwner) return 0.0f;
+        const float currentHp = avOwner->GetActorValue(RE::ActorValue::kHealth);
+        return PlayerHealthState::lastFrameHealth - currentHp;
+    };
+
+    // Skip projectiles for timed block / ward processing (both are melee-only),
+    // BUT we still need to count any HP loss they caused as real damage so the
+    // timed-dodge cooldown fires on arrows / spells / crossbow bolts the same
+    // way it did under the old hook.
     if (a_event->projectile) {
+        const float damageTaken = computePlayerDamageTaken();
+        if (damageTaken > 0.5f) {
+            auto* dmgSettings = Settings::GetSingleton();
+            if (TimedDodgeState::pendingDodge) {
+                TimedDodgeState::pendingDodge = false;
+                if (dmgSettings && dmgSettings->bDebugLogging) {
+                    logger::info("[TIMED DODGE] Pending dodge cancelled - player took {:.1f} ranged damage", damageTaken);
+                }
+            }
+            TimedDodgeState::OnPlayerDamaged();
+        }
         return Result::kContinue;
     }
 
@@ -1113,33 +1148,88 @@ RE::BSEventNotifyControl TimedBlockAddon::ProcessEvent(
         }
     }
     
-    // Check if this is a blocked hit
+    // 1.0.2: unblocked melee hit on the player → real damage. Used to be
+    // handled by CombatHit::Thunk's targetIsPlayer + healthDrop>0.5 check.
     if (!a_event->flags.any(HitFlag::kHitBlocked)) {
+        const float damageTaken = computePlayerDamageTaken();
+        if (damageTaken > 0.5f) {
+            auto* dmgSettings = Settings::GetSingleton();
+            if (TimedDodgeState::pendingDodge) {
+                TimedDodgeState::pendingDodge = false;
+                if (dmgSettings && dmgSettings->bDebugLogging) {
+                    logger::info("[TIMED DODGE] Pending dodge cancelled - player took {:.1f} real damage", damageTaken);
+                }
+            }
+            TimedDodgeState::OnPlayerDamaged();
+        }
         return Result::kContinue;
     }
-    
+
     auto* settings = Settings::GetSingleton();
-    
+
     // Get the attacker FIRST - we need it for distance check
     RE::Actor* attacker = a_event->cause ? a_event->cause->As<RE::Actor>() : nullptr;
     if (!attacker) {
+        // Blocked hit with no attacker — count any HP loss as real damage so
+        // the timed-dodge cooldown still fires (matches old Thunk behaviour).
+        const float damageTaken = computePlayerDamageTaken();
+        if (damageTaken > 0.5f) {
+            TimedDodgeState::OnPlayerDamaged();
+        }
         return Result::kContinue;
     }
-    
+
     // Check if player has the parry window effect (indicating a timed block)
     // Use cached result if available (same frame), otherwise check fresh
     if (!CooldownState::GetParryEffectCached()) {
+        // Blocked hit but no parry window — vanilla block reduction may still
+        // have left some damage. Treat residual HP loss as real damage so the
+        // timed-dodge cooldown behaves identically to the pre-1.0.2 build.
+        const float damageTaken = computePlayerDamageTaken();
+        if (damageTaken > 0.5f) {
+            TimedDodgeState::OnPlayerDamaged();
+        }
         return Result::kContinue;
     }
 
     if (settings->bOnlyWithShield && !ActorHasShieldEquipped(defender)) {
         return Result::kContinue;
     }
-    
+
     if (settings->bDebugLogging) {
         logger::info("[HITEVENT] Blocked hit detected with parry window effect active!");
     }
-    
+
+    // 1.0.2: parry-window HP restore. Done UNCONDITIONALLY here (before the
+    // cooldown / window-exclusion gates) to match v1.0.0 / v1.0.1 semantics:
+    // the original CombatHit::Thunk's ShouldPreventDamage gate did NOT
+    // consult addon cooldowns or window exclusion — damage prevention was
+    // independent of whether the slowmo/sound effects fired. We mirror that
+    // here so the cooldown-while-parrying corner case still spares HP.
+    // Bonus parity: the bPerkLockedBlock check is honoured here too.
+    {
+        bool perkOk = true;
+        if (settings->bPerkLockedBlock) {
+            auto* perk = damagePreventPerk;
+            perkOk = (perk != nullptr) && defender->HasPerk(perk);
+        }
+        if (perkOk) {
+            const float damageTaken = computePlayerDamageTaken();
+            if (damageTaken > 0.0f) {
+                auto* avOwner = defender->AsActorValueOwner();
+                if (avOwner) {
+                    avOwner->RestoreActorValue(
+                        RE::ACTOR_VALUE_MODIFIER::kDamage,
+                        RE::ActorValue::kHealth,
+                        damageTaken);
+                    if (settings->bDebugLogging) {
+                        logger::info("[TIMED BLOCK] Parry-window HP restored: +{:.1f}", damageTaken);
+                    }
+                }
+            }
+        }
+    }
+
     // *** CHECK COOLDOWN FIRST - before any effects can be applied ***
     if (settings->bEnableCooldown) {
         // Use cached nearby enemy check (checked every 100ms, not every event)
@@ -1168,15 +1258,18 @@ RE::BSEventNotifyControl TimedBlockAddon::ProcessEvent(
     // Mark that a timed block was triggered (for cooldown tracking)
     CooldownState::OnTimedBlockTriggered();
     WindowExclusion::Stamp();
-    
+
+    // (HP restore was performed earlier, before the cooldown / exclusion
+    // gates, to preserve v1.0.0/v1.0.1 ShouldPreventDamage semantics.)
+
     // Start counter attack window (if enabled) - pass attacker for lunge targeting
     CounterAttackState::StartWindow(attacker);
-    
+
     logger::info("[HITEVENT] TIMED BLOCK SUCCESS! Applying addon effects...");
-    
+
     // Apply all effects
     ApplyTimedBlockEffects(defender, attacker);
-    
+
     return Result::kContinue;
 }
 
@@ -1773,97 +1866,56 @@ void DispelParryWindowSpell()
 
 namespace CombatHit
 {
-    using Fn_t = void(RE::Actor*, RE::HitData*);
-    static inline Fn_t* _original = nullptr;
-
-    static void PreventDamage(RE::Actor* a_defender, RE::HitData* hitData)
-    {
-        if (!a_defender || !hitData) {
-            return;
-        }
-        auto* settings = Settings::GetSingleton();
-        auto* addon = TimedBlockAddon::GetSingleton();
-        if (!settings || !addon) {
-            return;
-        }
-
-        if (settings->bOnlyWithShield && !ActorHasShieldEquipped(a_defender)) {
-            return;
-        }
-        if (!addon->ActorHasParryWindowEffect(a_defender)) {
-            return;
-        }
-        if (!Offsets::IsBlocking(a_defender)) {
-            return;
-        }
-        if (!hitData->flags.any(RE::HitData::Flag::kBlocked)) {
-            return;
-        }
-
-        if (hitData->weapon) {
-            if (hitData->weapon->IsBow() || hitData->weapon->IsCrossbow()) {
-                return;
-            }
-        }
-
-        const float remaining = hitData->totalDamage;
-        if (settings->bPerkLockedBlock) {
-            auto* perk = addon->damagePreventPerk;
-            if (perk && a_defender->HasPerk(perk)) {
-                hitData->totalDamage = 0.0f;
-            } else {
-                hitData->totalDamage = remaining;
-            }
-        } else {
-            hitData->totalDamage = 0.0f;
-        }
-    }
-
-    static void Thunk(RE::Actor* a_this, RE::HitData* a_hitData)
-    {
-        if (a_this && a_hitData && a_this->IsPlayerRef()) {
-            // Hit-during-dodge: trigger timed dodge if the player is mid-dodge
-            if (TimedDodgeState::inDodgeAnimation && !TimedDodgeState::active) {
-                RE::Actor* attacker = a_hitData->aggressor.get().get();
-                if (attacker && attacker != a_this) {
-                    TimedDodgeState::TryTriggerFromHit(attacker);
-                }
-            }
-
-            // Health-verified damage cooldown: snapshot health before damage is
-            // applied, then check after.  Only start the cooldown if the player's
-            // health actually decreased — immune to dodge i-frames, parry windows,
-            // and any other system that absorbs the hit without real HP loss.
-            float healthBefore = a_this->AsActorValueOwner()->GetActorValue(RE::ActorValue::kHealth);
-
-            PreventDamage(a_this, a_hitData);
-            _original(a_this, a_hitData);
-
-            float healthAfter = a_this->AsActorValueOwner()->GetActorValue(RE::ActorValue::kHealth);
-            float healthDrop = healthBefore - healthAfter;
-
-            if (healthDrop > 0.5f) {
-                auto* settings = Settings::GetSingleton();
-                if (TimedDodgeState::pendingDodge) {
-                    TimedDodgeState::pendingDodge = false;
-                    if (settings->bDebugLogging) {
-                        logger::info("[TIMED DODGE] Pending dodge cancelled - player took {:.1f} real damage", healthDrop);
-                    }
-                }
-                TimedDodgeState::OnPlayerDamaged();
-            }
-        } else {
-            PreventDamage(a_this, a_hitData);
-            _original(a_this, a_hitData);
-        }
-    }
+    // ------------------------------------------------------------------------
+    // 1.0.2 — Hook-free architecture.
+    //
+    // Past attempts:
+    //   * v1.0.0 patched an in-function CALL site at hardcoded offset
+    //     RELOCATION_OFFSET(0x3c0, 0x4A8) inside Actor::DealDamage. The 0x4A8
+    //     value matched AE 1.6.640 only; on 1.6.1170 the patch landed in the
+    //     middle of an unrelated instruction, decoded later as garbage like
+    //     `dec [rbx+rdi*1-0x0D]`, and crashed every hit with
+    //     EXCEPTION_ILLEGAL_INSTRUCTION at SkyrimSE.exe+06BAC31..C34.
+    //   * v1.0.1 replaced that with a function-entry detour
+    //     (write_branch<5> on Actor::DealDamage). That removed the
+    //     hardcoded-offset bug, but other SKSE parry/combat plugins
+    //     (DualWieldParryingNG, etc.) also install entry hooks on
+    //     Actor::DealDamage. When two plugins chain hooks at the same
+    //     entry, CommonLibSSE-NG's saved-prologue copy in our trampoline
+    //     contained a JMP whose rel32 was relative to the original entry,
+    //     not relative to our trampoline page. Calling _original then
+    //     jumped to an unmapped page and crashed with
+    //     EXCEPTION_ACCESS_VIOLATION ("Tried to execute memory at...").
+    //
+    // v1.0.2 removes the Actor::DealDamage hook entirely. The same three
+    // behaviours are preserved by observation rather than patching:
+    //
+    //   1. Hit-during-dodge retroactive trigger
+    //        — already handled by TimedBlockAddon::ProcessEvent (TESHitEvent)
+    //          via TimedDodgeState::TryTriggerFromHit.
+    //   2. Parry-window damage prevention (player only)
+    //        — handled in TimedBlockAddon::ProcessEvent on a kHitBlocked
+    //          event during the parry window: we read PlayerHealthState::
+    //          lastFrameHealth, compute the HP drop, and RestoreActorValue
+    //          the delta back. Net effect to the player is the same as the
+    //          old in-function damage zeroing.
+    //   3. Timed-dodge "real damage" cooldown
+    //        — handled in TimedBlockAddon::ProcessEvent on a non-kHitBlocked
+    //          event for the player: any HP drop > 0.5 since last frame is
+    //          treated as real damage and triggers OnPlayerDamaged() and
+    //          pendingDodge cancellation.
+    //
+    // The per-frame health snapshot is taken at the end of
+    // PlayerCharacter::UpdateAnimation (PlayerHealthState::lastFrameHealth).
+    // ------------------------------------------------------------------------
 
     void Install()
     {
-        auto& trampoline = SKSE::GetTrampoline();
-        REL::Relocation<std::uintptr_t> target{ RELOCATION_ID(37673, 38627) };
-        _original = reinterpret_cast<Fn_t*>(trampoline.write_call<5>(
-            target.address() + RELOCATION_OFFSET(0x3c0, 0x4A8), Thunk));
+        logger::info("[CombatHit] 1.0.4 hook-free mode: Actor::DealDamage is NOT patched. "
+                     "Parry-window damage prevention via Precision PreHit Damage×0 modifier "
+                     "(preserves vanilla block animation/sound/stamina; primary), "
+                     "+ TESHitEvent post-hit restore (fallback for non-Precision hits). "
+                     "Cooldown via per-frame HP snapshot.");
     }
 }
 
@@ -3679,53 +3731,118 @@ void WardTimedBlockState::RegisterPrecision()
 		[](const PRECISION_API::PrecisionHitData& hitData) -> PRECISION_API::PreHitCallbackReturn {
 			PRECISION_API::PreHitCallbackReturn ret;  // bIgnoreHit defaults to false
 
-			auto* settings = Settings::GetSingleton();
-			if (!settings->bEnableWardTimedBlock || !inWindow) {
-				return ret;
-			}
+			// Precision allows ONE PreHit callback per plugin handle, so this
+			// single lambda handles BOTH the ward timed block and the regular
+			// parry-window timed block. Ward is checked first because it has
+			// a stricter gate (window must be open from a recent ward cast);
+			// if it doesn't consume the hit we fall through to the parry-window
+			// path below, which mirrors the post-hit TESHitEvent path but
+			// cancels the hit at Havok level (no HP flicker, no restore).
 
-			// Only intercept hits aimed at the player
+			auto* settings = Settings::GetSingleton();
+			if (!settings) return ret;
+
 			auto* player = RE::PlayerCharacter::GetSingleton();
-			if (!player || hitData.target != player) {
-				return ret;
-			}
+			if (!player || hitData.target != player) return ret;
 
 			auto* attacker = hitData.attacker;
-			if (!attacker) {
-				return ret;
-			}
+			if (!attacker || attacker == player) return ret;
 
-			// Direction check — vanilla wards cover the front 180°.
-			// Skip if the user wants omnidirectional coverage.
-			if (!settings->bWardOmnidirectional) {
-				// Build the player's forward vector from their yaw (radians).
-				// In Skyrim: yaw=0 → facing +Y (north), yaw=π/2 → facing +X (east).
-				const float yaw = player->GetAngle().z;
-				const RE::NiPoint3 playerFwd{ std::sin(yaw), std::cos(yaw), 0.0f };
+			//------------------------------------------------------------
+			// 1) Ward timed block (unchanged)
+			//------------------------------------------------------------
+			if (settings->bEnableWardTimedBlock && inWindow) {
+				bool wardCovers = true;
 
-				// Horizontal direction from player to attacker
-				RE::NiPoint3 toAttacker = attacker->GetPosition() - player->GetPosition();
-				toAttacker.z = 0.0f;
-				const float lenSq = toAttacker.SqrLength();
-				if (lenSq > 0.001f) {
-					toAttacker /= std::sqrt(lenSq);  // normalise
+				// Vanilla wards cover the front 180° unless overridden.
+				if (!settings->bWardOmnidirectional) {
+					const float yaw = player->GetAngle().z;
+					const RE::NiPoint3 playerFwd{ std::sin(yaw), std::cos(yaw), 0.0f };
+					RE::NiPoint3 toAttacker = attacker->GetPosition() - player->GetPosition();
+					toAttacker.z = 0.0f;
+					const float lenSq = toAttacker.SqrLength();
+					if (lenSq > 0.001f) {
+						toAttacker /= std::sqrt(lenSq);
+					}
+					if (playerFwd.Dot(toAttacker) < 0.0f) {
+						wardCovers = false;
+						if (settings->bDebugLogging) {
+							DebugNotify(DebugCategory::kWard, "[WARD] Hit from behind — not parried (non-omni)");
+						}
+					}
 				}
 
-				// dot >= 0 → attacker within the front 180° → ward covers it
-				if (playerFwd.Dot(toAttacker) < 0.0f) {
+				if (wardCovers) {
+					const bool parried = OnMeleeHit(player, attacker);
 					if (settings->bDebugLogging) {
-						DebugNotify(DebugCategory::kWard, "[WARD] Hit from behind — not parried (non-omni)");
+						logger::info("[WARD TB] Precision PreHit: attacker='{}', parried={}", attacker->GetName(), parried);
 					}
+					if (parried) {
+						ret.bIgnoreHit = true;
+						return ret;
+					}
+					// Ward rejected the hit (e.g. 2H rule) — fall through and
+					// let the regular parry-window path get a shot at it.
+				}
+			}
+
+			//------------------------------------------------------------
+			// 2) Regular parry-window timed block.
+			//
+			//    1.0.4: switched from `bIgnoreHit = true` (which cancelled
+			//    the entire hit, including the vanilla block animation /
+			//    block sound / stamina drain / kHitBlocked flag /
+			//    TESHitEvent — the player visually saw "nothing happened")
+			//    to a `PreHitModifier{Damage × 0}`. With bIgnoreHit left
+			//    false the engine processes the block 100% normally and
+			//    TESHitEvent fires with kHitBlocked; the modifier just
+			//    multiplies the incoming damage by 0 so the player loses
+			//    0 HP regardless of whether they have Shield-of-Stamina
+			//    style mods that already zero blocked damage.
+			//
+			//    Gating mirrors the v1.0.0 ShouldPreventDamage helper:
+			//      - parry-window MGEF active on player
+			//      - player is blocking
+			//      - shield (bOnlyWithShield)
+			//      - perk (bPerkLockedBlock)
+			//
+			//    Effects (slowmo / sound / counter window) are fired by
+			//    the existing TESHitEvent handler in
+			//    TimedBlockAddon::ProcessEvent on the resulting kHitBlocked
+			//    event — NOT here — so cooldown / exclusion / perk-effect
+			//    gating stays consistent across the Precision and
+			//    no-Precision paths. The TESHitEvent HP-restore path will
+			//    observe damageTaken ≈ 0 and no-op.
+			//------------------------------------------------------------
+			if (!CooldownState::GetParryEffectCached()) {
+				return ret;
+			}
+			if (!Offsets::IsBlocking(player)) {
+				return ret;
+			}
+			if (settings->bOnlyWithShield && !ActorHasShieldEquipped(player)) {
+				return ret;
+			}
+			auto* addon = TimedBlockAddon::GetSingleton();
+			if (settings->bPerkLockedBlock) {
+				auto* perk = addon ? addon->damagePreventPerk : nullptr;
+				if (!perk || !player->HasPerk(perk)) {
 					return ret;
 				}
 			}
 
-			// Attempt the parry. Returns true on success, false if rejected (e.g. 2H ward rule).
-			const bool parried = OnMeleeHit(player, attacker);
-			ret.bIgnoreHit = parried;
+			// Zero the damage but let the hit through so the engine plays
+			// the vanilla block animation/sound and TESHitEvent fires.
+			PRECISION_API::PreHitModifier dmgZero;
+			dmgZero.modifierType = PRECISION_API::PreHitModifier::ModifierType::Damage;
+			dmgZero.modifierOperation = PRECISION_API::PreHitModifier::ModifierOperation::Multiplicative;
+			dmgZero.modifierValue = 0.0f;
+			ret.modifiers.push_back(dmgZero);
+			// ret.bIgnoreHit stays false — engine processes the block normally.
 
 			if (settings->bDebugLogging) {
-				logger::info("[WARD TB] Precision PreHit: attacker='{}', parried={}", attacker->GetName(), parried);
+				logger::info("[TB Precision] Parry-window damage zeroed (block animation/sound preserved) — attacker='{}'",
+					attacker->GetName());
 			}
 
 			return ret;
@@ -3733,7 +3850,7 @@ void WardTimedBlockState::RegisterPrecision()
 
 	if (result == PRECISION_API::APIResult::OK) {
 		g_precisionAvailable = true;
-		logger::info("[WARD TB] Precision PreHit callback registered — hitbox-level ward parry active");
+		logger::info("[WARD TB] Precision PreHit callback registered — hitbox-level ward + parry-window prevention active");
 	} else {
 		logger::warn("[WARD TB] Precision AddPreHitCallback failed (result={})", static_cast<uint8_t>(result));
 	}
