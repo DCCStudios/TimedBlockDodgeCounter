@@ -113,6 +113,7 @@ void Settings::LoadSettings() {
     fTimedDodgeSlomoSpeed = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fSlomoSpeed", 0.05));
     fTimedDodgeCooldown = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCooldown", 3.0));
     fTimedDodgeDamageCooldown = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fDamageCooldown", 1.0));
+    fTimedDodgeHitContactCooldown = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fHitContactCooldown", 0.45));
     fTimedDodgeDetectionRange = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fDetectionRange", 350.0));
     fTimedDodgeForgivenessMs = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fForgivenessMs", 500.0));
     fTimedDodgeHitWindowMs = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fHitWindowMs", 600.0));
@@ -203,6 +204,7 @@ void Settings::LoadSettings() {
     fTimedDodgeCounterRangedWindowMs = std::clamp(fTimedDodgeCounterRangedWindowMs, 500.0f, 10000.0f);
     fTimedDodgeCounterDrawSpeedMult = std::clamp(fTimedDodgeCounterDrawSpeedMult, 1.0f, 10.0f);
     fTimedDodgeDamageCooldown = std::clamp(fTimedDodgeDamageCooldown, 0.0f, 60.0f);
+    fTimedDodgeHitContactCooldown = std::clamp(fTimedDodgeHitContactCooldown, 0.0f, 10.0f);
     iCounterLungeCurve = std::clamp(iCounterLungeCurve, 0, 5);
     iTimedDodgeCounterLungeCurve = std::clamp(iTimedDodgeCounterLungeCurve, 0, 5);
     fWardTimedBlockWindowMs = std::clamp(fWardTimedBlockWindowMs, 50.0f, 2000.0f);
@@ -356,6 +358,7 @@ void Settings::SaveSettings() {
     ini.SetDoubleValue("TimedDodge", "fSlomoSpeed", fTimedDodgeSlomoSpeed);
     ini.SetDoubleValue("TimedDodge", "fCooldown", fTimedDodgeCooldown);
     ini.SetDoubleValue("TimedDodge", "fDamageCooldown", fTimedDodgeDamageCooldown);
+    ini.SetDoubleValue("TimedDodge", "fHitContactCooldown", fTimedDodgeHitContactCooldown);
     ini.SetDoubleValue("TimedDodge", "fDetectionRange", fTimedDodgeDetectionRange);
     ini.SetDoubleValue("TimedDodge", "fForgivenessMs", fTimedDodgeForgivenessMs);
     ini.SetDoubleValue("TimedDodge", "fHitWindowMs", fTimedDodgeHitWindowMs);

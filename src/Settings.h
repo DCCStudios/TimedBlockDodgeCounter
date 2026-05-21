@@ -132,7 +132,8 @@ public:
     float fTimedDodgeSlomoDuration{ 4.0f };       // Slow-mo duration in seconds
     float fTimedDodgeSlomoSpeed{ 0.05f };         // Game speed during slomo (0.05 = 5%)
     float fTimedDodgeCooldown{ 3.0f };            // Cooldown in seconds
-    float fTimedDodgeDamageCooldown{ 1.0f };      // Cooldown after taking UNBLOCKED damage (seconds)
+    float fTimedDodgeDamageCooldown{ 1.0f };      // Cooldown after HP loss from a hit (seconds); 0 = off
+    float fTimedDodgeHitContactCooldown{ 0.45f }; // After melee *contact* (Precision PreHit); 0 = off. Not DoT-based.
     float fTimedDodgeDetectionRange{ 350.0f };    // Range to detect attacking enemies (game units)
     float fTimedDodgeForgivenessMs{ 500.0f };    // Grace period for early dodges (milliseconds)
     float fTimedDodgeHitWindowMs{ 600.0f };     // Window after dodge start where getting hit triggers timed dodge

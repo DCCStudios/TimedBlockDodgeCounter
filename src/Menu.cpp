@@ -789,7 +789,14 @@ namespace Menu
                     State::MarkChanged();
                 }
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("After taking damage, timed dodge cannot trigger for this duration.\nSet to 0 to disable. Default: 5 seconds");
+                    ImGui::SetTooltip("After losing HP from a hit (melee or ranged), timed dodge is blocked for this long.\nIgnores poison/DoT ticks that are not weapon hits. Set to 0 to disable.");
+                }
+
+                if (ImGui::SliderFloat("Hit contact cooldown (sec)##dodge", &settings->fTimedDodgeHitContactCooldown, 0.0f, 5.0f, "%.2f sec")) {
+                    State::MarkChanged();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("After a melee weapon *contact* on you (Precision pre-hit), timed dodge is blocked briefly.\nUses hit detection, not HP — blocked hits and i-frames still count.\nSet to 0 to disable. When Precision is off, uses TESHitEvent for melee only.");
                 }
                 
                 if (ImGui::SliderFloat("Detection Range##dodge", &settings->fTimedDodgeDetectionRange, 100.0f, 600.0f, "%.0f units")) {

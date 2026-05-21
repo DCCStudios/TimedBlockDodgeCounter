@@ -79,6 +79,13 @@ namespace CooldownState
 
     // Vanilla / dual-wield block state (REL:: IsBlocking)
     inline bool wasBlockingLastFrame{ false };
+
+    // Chrono-based parry window: the spell's effectItem.duration is uint32_t
+    // (integer seconds, minimum 1), so sub-second windows can't be expressed
+    // through the engine.  We track the real deadline here and force-dispel
+    // the spell when it elapses.
+    inline bool parryWindowTimerActive{ false };
+    inline std::chrono::steady_clock::time_point parryWindowDeadline;
     
     // Optimization: Cache nearby enemy check (checked every 100ms instead of every frame)
     inline std::chrono::steady_clock::time_point lastEnemyCheckTime;
@@ -451,9 +458,14 @@ namespace TimedDodgeState
     inline bool onCooldown{ false };
     inline std::chrono::steady_clock::time_point cooldownEndTime;
 
-    // Damage cooldown (cannot timed-dodge while recently hit)
+    // Damage cooldown (cannot timed-dodge while recently losing HP from a hit)
     inline bool onDamageCooldown{ false };
     inline std::chrono::steady_clock::time_point damageCooldownEndTime;
+
+    // Melee hit-contact cooldown (Precision PreHit / TESHit fallback) — one shot
+    // connected with the player, independent of final HP change (poison/DoT safe).
+    inline bool onHitContactCooldown{ false };
+    inline std::chrono::steady_clock::time_point hitContactCooldownEndTime;
 
     // Early dodge forgiveness buffer
     inline bool pendingDodge{ false };
@@ -509,8 +521,11 @@ namespace TimedDodgeState
     bool IsOnCooldown();
     void StartCooldown();
 
-    // Damage cooldown: called whenever the player takes a real hit
+    // Damage cooldown: called when the player loses HP from a hit (TESHit + snapshot)
     void OnPlayerDamaged();
+
+    // Hit-contact cooldown: melee weapon contact on player (Precision PreHit; TESHit if no Precision)
+    void OnMeleeWeaponHitContact();
 
     // Hit-during-dodge: player got hit while in a dodge animation but timed dodge
     // hadn't triggered yet.  Returns true if this retroactively starts a timed dodge.

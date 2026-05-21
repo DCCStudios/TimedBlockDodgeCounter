@@ -377,9 +377,16 @@ bool CooldownState::PlayerHasParryWindowEffect()
 
 bool CooldownState::GetParryEffectCached()
 {
-    // Only check once per frame - subsequent calls return cached result
     if (!parryEffectCachedThisFrame) {
-        cachedParryEffectResult = PlayerHasParryWindowEffect();
+        // The spell's engine duration is rounded up to 1 s (uint32_t), so the
+        // MGEF may still be in the active effects list after the real window
+        // has closed.  Gate on the chrono timer first.
+        if (parryWindowTimerActive &&
+            std::chrono::steady_clock::now() < parryWindowDeadline) {
+            cachedParryEffectResult = PlayerHasParryWindowEffect();
+        } else {
+            cachedParryEffectResult = false;
+        }
         parryEffectCachedThisFrame = true;
     }
     return cachedParryEffectResult;
@@ -424,6 +431,20 @@ void CooldownState::Update()
         wasBlockingLastFrame = currentlyBlocking;
     } else {
         wasBlockingLastFrame = false;
+    }
+
+    // Chrono-based parry window expiry: the spell's integer-second duration
+    // can't express sub-second windows, so we force-dispel here.
+    if (parryWindowTimerActive &&
+        std::chrono::steady_clock::now() >= parryWindowDeadline) {
+        parryWindowTimerActive = false;
+        if (addon && addon->ActorHasParryWindowEffect(player)) {
+            DispelParryWindowSpell();
+            if (settings->bDebugLogging) {
+                logger::info("[PARRY WINDOW] Chrono timer expired ({:.0f}ms) — spell dispelled",
+                    settings->fParryWindowDurationMs);
+            }
+        }
     }
 
     if (!settings->bEnableCooldown) {
@@ -742,8 +763,10 @@ void TimedBlockAddon::UpdateParryWindowDuration()
     const float durationSeconds = settings->fParryWindowDurationMs / 1000.0f;
     mgef_parry_window->data.taperDuration = durationSeconds;
     if (spell_parry_window && !spell_parry_window->effects.empty() && spell_parry_window->effects[0]) {
-        const auto d = static_cast<std::uint32_t>((std::max)(1.0f, std::ceil(durationSeconds)));
-        spell_parry_window->effects[0]->effectItem.duration = d;
+        // Engine duration is uint32_t (integer seconds).  We set it to a
+        // generous safety value — the chrono timer + force-dispel in
+        // CooldownState::Update() controls the real sub-second window.
+        spell_parry_window->effects[0]->effectItem.duration = 5;
     }
 }
 
@@ -890,6 +913,11 @@ void TimedBlockAddon::CastParryWindowSpell(RE::Actor* target)
     auto* caster = target->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant);
     if (caster) {
         caster->CastSpellImmediate(spell_parry_window, false, target, 1.0f, false, 0.0f, nullptr);
+
+        auto* settings = Settings::GetSingleton();
+        CooldownState::parryWindowTimerActive = true;
+        CooldownState::parryWindowDeadline = std::chrono::steady_clock::now() +
+            std::chrono::microseconds(static_cast<long long>(settings->fParryWindowDurationMs * 1000.0f));
     }
 }
 
@@ -1032,6 +1060,12 @@ RE::BSEventNotifyControl TimedBlockAddon::ProcessEvent(
             }
         }
         return Result::kContinue;
+    }
+
+    // Melee hit-contact cooldown (not HP): Precision PreHit handles this when
+    // Precision is registered; otherwise one TESHitEvent per melee hit approximates it.
+    if (!a_event->projectile && !WardTimedBlockState::g_precisionAvailable) {
+        TimedDodgeState::OnMeleeWeaponHitContact();
     }
 
     // 1.0.2: damage-cooldown detection — used to live in CombatHit::Thunk via a
@@ -1851,8 +1885,9 @@ void DispelParryWindowSpell()
             RE::EffectSetting* setting = effect->GetBaseObject();
             if (addon->IsParryWindowMGEF(setting)) {
                 effect->Dispel(true);
+                CooldownState::parryWindowTimerActive = false;
                 if (settings->bDebugLogging) {
-                    logger::info("[COOLDOWN] DISPELLED parry window effect - cooldown is ACTIVE");
+                    logger::info("[COOLDOWN] DISPELLED parry window effect");
                 }
                 return;
             }
@@ -3815,18 +3850,22 @@ void WardTimedBlockState::RegisterPrecision()
 			//    observe damageTaken ≈ 0 and no-op.
 			//------------------------------------------------------------
 			if (!CooldownState::GetParryEffectCached()) {
+				TimedDodgeState::OnMeleeWeaponHitContact();
 				return ret;
 			}
 			if (!Offsets::IsBlocking(player)) {
+				TimedDodgeState::OnMeleeWeaponHitContact();
 				return ret;
 			}
 			if (settings->bOnlyWithShield && !ActorHasShieldEquipped(player)) {
+				TimedDodgeState::OnMeleeWeaponHitContact();
 				return ret;
 			}
 			auto* addon = TimedBlockAddon::GetSingleton();
 			if (settings->bPerkLockedBlock) {
 				auto* perk = addon ? addon->damagePreventPerk : nullptr;
 				if (!perk || !player->HasPerk(perk)) {
+					TimedDodgeState::OnMeleeWeaponHitContact();
 					return ret;
 				}
 			}
@@ -3845,6 +3884,7 @@ void WardTimedBlockState::RegisterPrecision()
 					attacker->GetName());
 			}
 
+			TimedDodgeState::OnMeleeWeaponHitContact();
 			return ret;
 		});
 
@@ -4486,6 +4526,19 @@ void TimedDodgeState::OnDodgeEvent()
         }
         onDamageCooldown = false;
     }
+
+    if (onHitContactCooldown) {
+        auto nowHit = std::chrono::steady_clock::now();
+        if (nowHit < hitContactCooldownEndTime) {
+            if (settings->bDebugLogging) {
+                auto remainingHitMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    hitContactCooldownEndTime - nowHit).count();
+                logger::info("[TIMED DODGE] Blocked by melee hit-contact cooldown ({}ms remaining)", remainingHitMs);
+            }
+            return;
+        }
+        onHitContactCooldown = false;
+    }
     
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) return;
@@ -4835,6 +4888,27 @@ void TimedDodgeState::OnPlayerDamaged()
     if (settings->bDebugLogging) {
         logger::info("[TIMED DODGE] Damage cooldown started ({:.1f}s)", settings->fTimedDodgeDamageCooldown);
         DebugNotify(DebugCategory::kDodge, "[TD] Damage cooldown!");
+    }
+}
+
+void TimedDodgeState::OnMeleeWeaponHitContact()
+{
+    if (active || slomoActive || inDodgeAnimation) {
+        return;
+    }
+
+    auto* settings = Settings::GetSingleton();
+    if (!settings || !settings->bEnableTimedDodge || settings->fTimedDodgeHitContactCooldown <= 0.0f) {
+        return;
+    }
+
+    onHitContactCooldown = true;
+    hitContactCooldownEndTime = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(static_cast<long long>(settings->fTimedDodgeHitContactCooldown * 1000.0f));
+    pendingDodge = false;
+
+    if (settings->bDebugLogging) {
+        logger::info("[TIMED DODGE] Melee hit-contact cooldown started ({:.2f}s)", settings->fTimedDodgeHitContactCooldown);
     }
 }
 
