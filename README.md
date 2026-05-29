@@ -4,7 +4,7 @@ SKSE plugin for Skyrim SE/AE that adds timed blocking, timed dodging, ward parry
 
 ## Features
 
-- **Timed Block** — Block within a configurable parry window to negate damage, stagger the attacker, trigger hitstop, camera shake, stamina restore, slowmo, and explosion VFX.
+- **Timed Block** — Block within a configurable parry window to negate damage, stagger the attacker, trigger hitstop, camera shake, stamina restore, and slowmo.
 - **Timed Dodge** — Dodge an incoming attack to trigger slow-motion, radial blur, i-frames, and a counter-attack window. Supports TK Dodge RE, DMCO, and Ultimate Dodge.
 - **Counter Attack** — After a successful timed block or dodge, attack to lunge at the attacker with a damage bonus. Supports melee, ranged (bow/crossbow with draw-speed boost), and spell counters.
 - **Ward Timed Block** — Block melee attacks with an active ward for stagger, magicka restore, and a spell-counter window. Supports Precision API for accurate hit detection.
