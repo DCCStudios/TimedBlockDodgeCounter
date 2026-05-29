@@ -11,6 +11,49 @@
 #include <random>
 #include <cstring>
 
+//=============================================================================
+// HOOK COMPATIBILITY DOCUMENTATION (for other mod authors)
+//
+// This plugin installs the following hooks. If you're building a mod that
+// touches similar systems, check here for potential conflicts:
+//
+// 1. PlayerCharacter::UpdateAnimation (vtable vfunc 0x7D)
+//    - Type: vtable replacement (write_vfunc)
+//    - Purpose: per-frame updates (cooldown tracking, HP snapshot, timed dodge,
+//      counter attack timers, ward window, anim speed control)
+//    - Conflict risk: LOW if both plugins call _originalFunc (chains properly)
+//
+// 2. RunOneActorAnimationUpdateJob (call-site at offset 0x74)
+//    - Type: trampoline write_call<5>
+//    - Purpose: NPC animation speed manipulation (hitstop, attacker slow)
+//    - Conflict risk: LOW (niche call site)
+//
+// 3. bhkCharacterStateOnGround + bhkCharacterStateInAir (vtable vfunc 8)
+//    - Type: vtable replacement (write_vfunc)
+//    - Purpose: counter-attack lunge physics (velocity injection)
+//    - Conflict risk: LOW (only active during lunge frames)
+//
+// 4. Precision API PreHitCallback (via AddPreHitCallback)
+//    - Type: official Precision plugin API (not a raw hook)
+//    - Purpose: parry-window damage zeroing, ward timed block, hit-contact cooldown
+//    - Conflict risk: NONE (Precision supports one callback per plugin handle;
+//      multiple plugins can each register their own)
+//
+// 5. SKSE Event Sinks: TESHitEvent, TESMagicEffectApplyEvent,
+//    BSAnimationGraphEvent, InputEvent
+//    - Type: standard SKSE event registration
+//    - Conflict risk: NONE (unlimited subscribers)
+//
+// NOT hooked (intentionally removed for compatibility):
+//    - Actor::DealDamage — removed in v1.0.2 due to conflicts with
+//      DualWieldParryingNG and other parry mods. Damage prevention now uses
+//      Precision PreHit modifier (primary) + TESHitEvent HP restore (fallback).
+//
+// To disable timed block behavior without uninstalling: set bEnableCooldown,
+// parry window duration, or the perk-lock settings in the INI. The hooks
+// remain installed but become effectively no-ops for timed block logic.
+//=============================================================================
+
 // Windows headers for custom WAV playback
 #include <mmsystem.h>
 #pragma comment(lib, "winmm.lib")
@@ -78,6 +121,34 @@ namespace
 		} catch (...) {
 			return 0;
 		}
+	}
+
+	float GetTimedBlockDamageReduction(RE::Actor* player)
+	{
+		auto* settings = Settings::GetSingleton();
+		if (!player) return settings->fDmgReductionUnarmed;
+
+		if (ActorHasShieldEquipped(player)) {
+			return settings->fDmgReductionShield;
+		}
+
+		auto* equippedRight = player->GetEquippedObject(false);
+		if (equippedRight && equippedRight->IsWeapon()) {
+			auto* weapon = equippedRight->As<RE::TESObjectWEAP>();
+			if (weapon) {
+				switch (weapon->GetWeaponType()) {
+					case RE::WEAPON_TYPE::kOneHandSword: return settings->fDmgReductionSword;
+					case RE::WEAPON_TYPE::kOneHandDagger: return settings->fDmgReductionDagger;
+					case RE::WEAPON_TYPE::kOneHandAxe: return settings->fDmgReductionAxe;
+					case RE::WEAPON_TYPE::kOneHandMace: return settings->fDmgReductionMace;
+					case RE::WEAPON_TYPE::kTwoHandSword: return settings->fDmgReductionGreatsword;
+					case RE::WEAPON_TYPE::kTwoHandAxe: return settings->fDmgReductionBattleaxe;
+					default: return settings->fDmgReductionUnarmed;
+				}
+			}
+		}
+
+		return settings->fDmgReductionUnarmed;
 	}
 }
 
@@ -1286,17 +1357,20 @@ RE::BSEventNotifyControl TimedBlockAddon::ProcessEvent(
             auto* perk = damagePreventPerk;
             perkOk = (perk != nullptr) && defender->HasPerk(perk);
         }
-        if (perkOk) {
+        float reductionPct = GetTimedBlockDamageReduction(defender);
+        if (perkOk && reductionPct > 0.0f) {
             const float damageTaken = computePlayerDamageTaken();
             if (damageTaken > 0.0f) {
                 auto* avOwner = defender->AsActorValueOwner();
                 if (avOwner) {
+                    float restoreAmount = damageTaken * (reductionPct / 100.0f);
                     avOwner->RestoreActorValue(
                         RE::ACTOR_VALUE_MODIFIER::kDamage,
                         RE::ActorValue::kHealth,
-                        damageTaken);
+                        restoreAmount);
                     if (settings->bDebugLogging) {
-                        logger::info("[TIMED BLOCK] Parry-window HP restored: +{:.1f}", damageTaken);
+                        logger::info("[TIMED BLOCK] Parry-window HP restored: +{:.1f} ({:.0f}% of {:.1f})",
+                            restoreAmount, reductionPct, damageTaken);
                     }
                 }
             }
@@ -3909,18 +3983,19 @@ void WardTimedBlockState::RegisterPrecision()
 				}
 			}
 
-			// Zero the damage but let the hit through so the engine plays
-			// the vanilla block animation/sound and TESHitEvent fires.
-			PRECISION_API::PreHitModifier dmgZero;
-			dmgZero.modifierType = PRECISION_API::PreHitModifier::ModifierType::Damage;
-			dmgZero.modifierOperation = PRECISION_API::PreHitModifier::ModifierOperation::Multiplicative;
-			dmgZero.modifierValue = 0.0f;
-			ret.modifiers.push_back(dmgZero);
+			// Reduce damage based on per-equipment-type reduction
+			float reductionPct = GetTimedBlockDamageReduction(player);
+			float reductionFactor = 1.0f - (reductionPct / 100.0f);
+			PRECISION_API::PreHitModifier dmgMod;
+			dmgMod.modifierType = PRECISION_API::PreHitModifier::ModifierType::Damage;
+			dmgMod.modifierOperation = PRECISION_API::PreHitModifier::ModifierOperation::Multiplicative;
+			dmgMod.modifierValue = reductionFactor;
+			ret.modifiers.push_back(dmgMod);
 			// ret.bIgnoreHit stays false — engine processes the block normally.
 
 			if (settings->bDebugLogging) {
-				logger::info("[TB Precision] Parry-window damage zeroed (block animation/sound preserved) — attacker='{}'",
-					attacker->GetName());
+				logger::info("[TB Precision] Parry-window damage reduced by {:.0f}% (multiplier={:.2f}) — attacker='{}'",
+					reductionPct, reductionFactor, attacker->GetName());
 			}
 
 			TimedDodgeState::OnMeleeWeaponHitContact();
@@ -4031,12 +4106,14 @@ bool WardTimedBlockState::OnMeleeHit(RE::Actor* defender, RE::Actor* attacker)
 	// Fallback damage cancel: when Precision is not available the hit fires through
 	// TESHitEvent (post-damage), so we restore health here.  When Precision IS available
 	// the hit is cancelled at the Havok level before any health loss, so this is a no-op.
-	if (settings->bWardTimedBlockDamageCancel && defender) {
+	if (settings->fWardDmgReduction > 0.0f && defender) {
 		auto* avOwner = defender->AsActorValueOwner();
 		if (avOwner) {
 			const float cur = avOwner->GetActorValue(RE::ActorValue::kHealth);
 			if (cur < healthSnapshot) {
-				avOwner->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth, healthSnapshot - cur);
+				float dmgTaken = healthSnapshot - cur;
+				float restoreAmount = dmgTaken * (settings->fWardDmgReduction / 100.0f);
+				avOwner->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth, restoreAmount);
 			}
 		}
 	}

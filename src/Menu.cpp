@@ -126,6 +126,44 @@ namespace Menu
             ImGui::Spacing();
             if (ImGui::TreeNodeEx("On Successful Parry##tb", ImGuiTreeNodeFlags_DefaultOpen)) {
 
+                if (ImGui::TreeNodeEx("Damage Reduction##tb")) {
+                    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
+                        "% of hit damage prevented per equipment type (100 = full negate)");
+                    ImGui::Spacing();
+
+                    if (ImGui::SliderFloat("Shield##dmgRed", &settings->fDmgReductionShield, 0.0f, 100.0f, "%.0f%%")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::SliderFloat("Unarmed##dmgRed", &settings->fDmgReductionUnarmed, 0.0f, 100.0f, "%.0f%%")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::SliderFloat("Sword##dmgRed", &settings->fDmgReductionSword, 0.0f, 100.0f, "%.0f%%")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::SliderFloat("Dagger##dmgRed", &settings->fDmgReductionDagger, 0.0f, 100.0f, "%.0f%%")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::SliderFloat("War Axe##dmgRed", &settings->fDmgReductionAxe, 0.0f, 100.0f, "%.0f%%")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::SliderFloat("Mace##dmgRed", &settings->fDmgReductionMace, 0.0f, 100.0f, "%.0f%%")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::SliderFloat("Greatsword##dmgRed", &settings->fDmgReductionGreatsword, 0.0f, 100.0f, "%.0f%%")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::SliderFloat("Battleaxe / Warhammer##dmgRed", &settings->fDmgReductionBattleaxe, 0.0f, 100.0f, "%.0f%%")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Covers Battleaxe and Warhammer (both use kTwoHandAxe internally).");
+                    }
+
+                    ImGui::TreePop();
+                }
+
+                ImGui::Spacing();
+
                 // Hitstop
                 if (ImGui::Checkbox("Hitstop##tb", &settings->bEnableHitstop)) {
                     State::MarkChanged();
@@ -1281,11 +1319,15 @@ namespace Menu
                 ImGui::Spacing();
                 if (ImGui::TreeNodeEx("On Successful Parry##ward", ImGuiTreeNodeFlags_DefaultOpen)) {
 
-                    if (ImGui::Checkbox("Cancel Melee Damage##ward", &settings->bWardTimedBlockDamageCancel)) {
+                    if (ImGui::SliderFloat("Damage Reduction##ward", &settings->fWardDmgReduction, 0.0f, 100.0f, "%.0f%%")) {
                         State::MarkChanged();
                     }
                     if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("Restores health lost from the melee hit that landed\nduring the ward window, effectively cancelling the damage.");
+                        ImGui::SetTooltip(
+                            "How much of the melee hit's damage is prevented on a successful ward parry.\n\n"
+                            "100%% = full cancel (default, take no damage)\n"
+                            "50%% = take half damage\n"
+                            "0%% = no protection (effects only)");
                     }
 
                     ImGui::Spacing();

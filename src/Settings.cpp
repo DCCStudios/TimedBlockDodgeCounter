@@ -21,6 +21,14 @@ void Settings::LoadSettings() {
     // Load original settings (for compatibility)
     sBlockKey = ini.GetValue("", "sBlockKey", "V");
     fStaggerDistance = static_cast<float>(ini.GetDoubleValue("", "fStaggerDistance", 128.0));
+    fDmgReductionShield = static_cast<float>(ini.GetDoubleValue("", "fDmgReductionShield", 100.0));
+    fDmgReductionUnarmed = static_cast<float>(ini.GetDoubleValue("", "fDmgReductionUnarmed", 100.0));
+    fDmgReductionSword = static_cast<float>(ini.GetDoubleValue("", "fDmgReductionSword", 100.0));
+    fDmgReductionDagger = static_cast<float>(ini.GetDoubleValue("", "fDmgReductionDagger", 100.0));
+    fDmgReductionAxe = static_cast<float>(ini.GetDoubleValue("", "fDmgReductionAxe", 100.0));
+    fDmgReductionMace = static_cast<float>(ini.GetDoubleValue("", "fDmgReductionMace", 100.0));
+    fDmgReductionGreatsword = static_cast<float>(ini.GetDoubleValue("", "fDmgReductionGreatsword", 100.0));
+    fDmgReductionBattleaxe = static_cast<float>(ini.GetDoubleValue("", "fDmgReductionBattleaxe", 100.0));
     bPerkLockedBlock = ini.GetBoolValue("", "bPerkLockedBlock", false);
     bOnlyWithShield = ini.GetBoolValue("", "bOnlyWithShield", false);
     bPerkLockedStagger = ini.GetBoolValue("", "bPerkLockedStagger", false);
@@ -158,7 +166,13 @@ void Settings::LoadSettings() {
     bWardTimedBlockStagger = ini.GetBoolValue("WardTimedBlock", "bStagger", true);
     fWardSmallStaggerMagnitude = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fSmallStagger", 0.5));
     fWardLargeStaggerMagnitude = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fLargeStagger", 1.0));
-    bWardTimedBlockDamageCancel = ini.GetBoolValue("WardTimedBlock", "bDamageCancel", true);
+    // Backward compat: read old bool key, then override with float if present
+    if (ini.GetBoolValue("WardTimedBlock", "bDamageCancel", true)) {
+        fWardDmgReduction = 100.0f;
+    } else {
+        fWardDmgReduction = 0.0f;
+    }
+    fWardDmgReduction = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fDmgReduction", fWardDmgReduction));
     bWardTimedBlockSound = ini.GetBoolValue("WardTimedBlock", "bSound", true);
     sWardTimedBlockSoundFile = ini.GetValue("WardTimedBlock", "sSoundFile", "wardtimedblock.wav");
     fWardTimedBlockSoundVolume = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fSoundVolume", 1.0));
@@ -226,6 +240,15 @@ void Settings::LoadSettings() {
     fWardMeleeDetectionRange = std::clamp(fWardMeleeDetectionRange, 50.0f, 1000.0f);
     fWindowExclusionMs = std::clamp(fWindowExclusionMs, 0.0f, 5000.0f);
     fStaggerDistance = std::clamp(fStaggerDistance, 0.0f, 2048.0f);
+    fDmgReductionShield = std::clamp(fDmgReductionShield, 0.0f, 100.0f);
+    fDmgReductionUnarmed = std::clamp(fDmgReductionUnarmed, 0.0f, 100.0f);
+    fDmgReductionSword = std::clamp(fDmgReductionSword, 0.0f, 100.0f);
+    fDmgReductionDagger = std::clamp(fDmgReductionDagger, 0.0f, 100.0f);
+    fDmgReductionAxe = std::clamp(fDmgReductionAxe, 0.0f, 100.0f);
+    fDmgReductionMace = std::clamp(fDmgReductionMace, 0.0f, 100.0f);
+    fDmgReductionGreatsword = std::clamp(fDmgReductionGreatsword, 0.0f, 100.0f);
+    fDmgReductionBattleaxe = std::clamp(fDmgReductionBattleaxe, 0.0f, 100.0f);
+    fWardDmgReduction = std::clamp(fWardDmgReduction, 0.0f, 100.0f);
     
     logger::info("Settings loaded successfully");
     logger::info("  ParryWindow: {}ms", fParryWindowDurationMs);
@@ -281,6 +304,14 @@ void Settings::SaveSettings() {
     // Save core timed block settings (root section)
     ini.SetValue("", "sBlockKey", sBlockKey.c_str());
     ini.SetDoubleValue("", "fStaggerDistance", fStaggerDistance);
+    ini.SetDoubleValue("", "fDmgReductionShield", fDmgReductionShield);
+    ini.SetDoubleValue("", "fDmgReductionUnarmed", fDmgReductionUnarmed);
+    ini.SetDoubleValue("", "fDmgReductionSword", fDmgReductionSword);
+    ini.SetDoubleValue("", "fDmgReductionDagger", fDmgReductionDagger);
+    ini.SetDoubleValue("", "fDmgReductionAxe", fDmgReductionAxe);
+    ini.SetDoubleValue("", "fDmgReductionMace", fDmgReductionMace);
+    ini.SetDoubleValue("", "fDmgReductionGreatsword", fDmgReductionGreatsword);
+    ini.SetDoubleValue("", "fDmgReductionBattleaxe", fDmgReductionBattleaxe);
     ini.SetBoolValue("", "bPerkLockedBlock", bPerkLockedBlock);
     ini.SetBoolValue("", "bOnlyWithShield", bOnlyWithShield);
     ini.SetBoolValue("", "bPerkLockedStagger", bPerkLockedStagger);
@@ -412,7 +443,7 @@ void Settings::SaveSettings() {
     ini.SetBoolValue("WardTimedBlock", "bStagger", bWardTimedBlockStagger);
     ini.SetDoubleValue("WardTimedBlock", "fSmallStagger", fWardSmallStaggerMagnitude);
     ini.SetDoubleValue("WardTimedBlock", "fLargeStagger", fWardLargeStaggerMagnitude);
-    ini.SetBoolValue("WardTimedBlock", "bDamageCancel", bWardTimedBlockDamageCancel);
+    ini.SetDoubleValue("WardTimedBlock", "fDmgReduction", fWardDmgReduction);
     ini.SetBoolValue("WardTimedBlock", "bSound", bWardTimedBlockSound);
     ini.SetValue("WardTimedBlock", "sSoundFile", sWardTimedBlockSoundFile.c_str());
     ini.SetDoubleValue("WardTimedBlock", "fSoundVolume", fWardTimedBlockSoundVolume);

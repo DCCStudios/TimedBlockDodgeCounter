@@ -113,6 +113,15 @@ public:
     //==========================================================================
     std::string sBlockKey{ "V" };
     float fStaggerDistance{ 128.0f };
+    // Timed Block Damage Reduction (per blocking equipment type, 0-100%)
+    float fDmgReductionShield{ 100.0f };
+    float fDmgReductionUnarmed{ 100.0f };
+    float fDmgReductionSword{ 100.0f };
+    float fDmgReductionDagger{ 100.0f };
+    float fDmgReductionAxe{ 100.0f };
+    float fDmgReductionMace{ 100.0f };
+    float fDmgReductionGreatsword{ 100.0f };
+    float fDmgReductionBattleaxe{ 100.0f };
     bool  bPerkLockedBlock{ false };
     bool  bOnlyWithShield{ false };
     bool  bPerkLockedStagger{ false };
@@ -198,7 +207,7 @@ public:
     float fWardSmallStaggerMagnitude{ 0.5f };   // Single-hand ward
     float fWardLargeStaggerMagnitude{ 1.0f };    // Dual-cast ward (both hands)
 
-    bool  bWardTimedBlockDamageCancel{ true };
+    float fWardDmgReduction{ 100.0f };          // Ward timed block damage reduction % (100 = full cancel)
 
     bool  bWardTimedBlockSound{ true };
     std::string sWardTimedBlockSoundFile{ "wardtimedblock.wav" };

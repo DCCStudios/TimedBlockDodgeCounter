@@ -33,7 +33,21 @@ Output goes to `Compile/SKSE/Plugins/` (DLL, PDB, INI).
 
 - [CommonLibSSE-NG](https://github.com/CharmedBaryon/CommonLibSSE-NG)
 - [SimpleIni](https://github.com/brofield/simpleini)
-- [Xbyak](https://github.com/herumi/xbyak)
+
+## Hook Compatibility
+
+This plugin installs the following hooks. If you're building a mod that touches similar systems, check here for potential conflicts:
+
+| # | Hook Target | Type | Purpose | Conflict Risk |
+|---|-------------|------|---------|---------------|
+| 1 | `PlayerCharacter::UpdateAnimation` (vtable vfunc 0x7D) | vtable `write_vfunc` | Per-frame updates: cooldowns, HP snapshot, timed dodge timers, anim speed | LOW — chains properly if both plugins call `_originalFunc` |
+| 2 | `RunOneActorAnimationUpdateJob` (call-site offset 0x74) | trampoline `write_call<5>` | NPC animation speed (hitstop, attacker slow) | LOW — niche call site |
+| 3 | `bhkCharacterStateOnGround` + `bhkCharacterStateInAir` (vtable vfunc 8) | vtable `write_vfunc` | Counter-attack lunge physics (velocity injection) | LOW — only active during lunge frames |
+| 4 | Precision API `PreHitCallback` | Official plugin API (`AddPreHitCallback`) | Parry-window damage zeroing, ward timed block, hit-contact cooldown | NONE — one callback per plugin handle; multiple plugins coexist |
+| 5 | SKSE Event Sinks: `TESHitEvent`, `TESMagicEffectApplyEvent`, `BSAnimationGraphEvent`, `InputEvent` | Standard SKSE registration | Hit/spell/anim/input event processing | NONE — unlimited subscribers |
+
+**Not hooked (intentionally removed):**
+- `Actor::DealDamage` — removed in v1.0.2 due to trampoline conflicts with DualWieldParryingNG and similar mods. Damage prevention now uses Precision PreHit modifier (primary) + TESHitEvent HP restore (fallback).
 
 ## Installation
 
