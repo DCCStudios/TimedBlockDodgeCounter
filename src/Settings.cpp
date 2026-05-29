@@ -118,6 +118,7 @@ void Settings::LoadSettings() {
     fTimedDodgeForgivenessMs = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fForgivenessMs", 500.0));
     fTimedDodgeHitWindowMs = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fHitWindowMs", 600.0));
     bTimedDodgeIframes = ini.GetBoolValue("TimedDodge", "bIframes", true);
+    fTimedDodgeAttackerImmunity = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fAttackerImmunity", 1.0));
     bTimedDodgeCounterAttack = ini.GetBoolValue("TimedDodge", "bCounterAttack", true);
     fTimedDodgeCounterWindowMs = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterWindowMs", 2000.0));
     fTimedDodgeCounterDamagePercent = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterDamagePercent", 50.0));
@@ -146,6 +147,10 @@ void Settings::LoadSettings() {
     fTimedDodgeAttackerSlowDuration = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fAttackerSlowDuration", 1.5));
     bTimedDodgeSound = ini.GetBoolValue("TimedDodge", "bSound", true);
     fTimedDodgeSoundVolume = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fSoundVolume", 1.0));
+    bPrecisionStrictDodge = ini.GetBoolValue("TimedDodge", "bPrecisionStrictDodge", true);
+    bPrecisionFallbackToAttackState = ini.GetBoolValue("TimedDodge", "bPrecisionFallbackToAttackState", true);
+    fPrecisionReachTolerance = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fPrecisionReachTolerance", 64.0));
+    fPrecisionLookaheadSec = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fPrecisionLookaheadSec", 0.2));
 
     // Ward Timed Block
     bEnableWardTimedBlock = ini.GetBoolValue("WardTimedBlock", "bEnabled", true);
@@ -205,6 +210,9 @@ void Settings::LoadSettings() {
     fTimedDodgeCounterDrawSpeedMult = std::clamp(fTimedDodgeCounterDrawSpeedMult, 1.0f, 10.0f);
     fTimedDodgeDamageCooldown = std::clamp(fTimedDodgeDamageCooldown, 0.0f, 60.0f);
     fTimedDodgeHitContactCooldown = std::clamp(fTimedDodgeHitContactCooldown, 0.0f, 10.0f);
+    fTimedDodgeAttackerImmunity = std::clamp(fTimedDodgeAttackerImmunity, 0.0f, 10.0f);
+    fPrecisionReachTolerance = std::clamp(fPrecisionReachTolerance, 0.0f, 512.0f);
+    fPrecisionLookaheadSec = std::clamp(fPrecisionLookaheadSec, 0.0f, 2.0f);
     iCounterLungeCurve = std::clamp(iCounterLungeCurve, 0, 5);
     iTimedDodgeCounterLungeCurve = std::clamp(iTimedDodgeCounterLungeCurve, 0, 5);
     fWardTimedBlockWindowMs = std::clamp(fWardTimedBlockWindowMs, 50.0f, 2000.0f);
@@ -244,6 +252,8 @@ void Settings::LoadSettings() {
     logger::info("    CounterWindow: {:.0f}ms, CounterDmg: +{}% (timeout={}s), CounterLunge: {} (speed={} u/s), Sound: {} (vol={}%)",
         fTimedDodgeCounterWindowMs, fTimedDodgeCounterDamagePercent, fTimedDodgeCounterDamageTimeout,
         bTimedDodgeCounterLunge, fTimedDodgeCounterLungeSpeed, bTimedDodgeSound, fTimedDodgeSoundVolume * 100.0f);
+    logger::info("    PrecisionStrict: {} (fallback={}, tolerance={}, lookahead={}s)",
+        bPrecisionStrictDodge, bPrecisionFallbackToAttackState, fPrecisionReachTolerance, fPrecisionLookaheadSec);
     logger::info("  WardTimedBlock: {} (window={}ms, cooldown={}s, counter={}, spellHit={})",
         bEnableWardTimedBlock, fWardTimedBlockWindowMs, fWardTimedBlockCooldown,
         bWardTimedBlockCounterAttack, bWardCounterSpellHit);
@@ -363,6 +373,7 @@ void Settings::SaveSettings() {
     ini.SetDoubleValue("TimedDodge", "fForgivenessMs", fTimedDodgeForgivenessMs);
     ini.SetDoubleValue("TimedDodge", "fHitWindowMs", fTimedDodgeHitWindowMs);
     ini.SetBoolValue("TimedDodge", "bIframes", bTimedDodgeIframes);
+    ini.SetDoubleValue("TimedDodge", "fAttackerImmunity", fTimedDodgeAttackerImmunity);
     ini.SetBoolValue("TimedDodge", "bCounterAttack", bTimedDodgeCounterAttack);
     ini.SetDoubleValue("TimedDodge", "fCounterWindowMs", fTimedDodgeCounterWindowMs);
     ini.SetDoubleValue("TimedDodge", "fCounterDamagePercent", fTimedDodgeCounterDamagePercent);
@@ -391,6 +402,10 @@ void Settings::SaveSettings() {
     ini.SetDoubleValue("TimedDodge", "fAttackerSlowDuration", fTimedDodgeAttackerSlowDuration);
     ini.SetBoolValue("TimedDodge", "bSound", bTimedDodgeSound);
     ini.SetDoubleValue("TimedDodge", "fSoundVolume", fTimedDodgeSoundVolume);
+    ini.SetBoolValue("TimedDodge", "bPrecisionStrictDodge", bPrecisionStrictDodge);
+    ini.SetBoolValue("TimedDodge", "bPrecisionFallbackToAttackState", bPrecisionFallbackToAttackState);
+    ini.SetDoubleValue("TimedDodge", "fPrecisionReachTolerance", fPrecisionReachTolerance);
+    ini.SetDoubleValue("TimedDodge", "fPrecisionLookaheadSec", fPrecisionLookaheadSec);
 
     ini.SetBoolValue("WardTimedBlock", "bEnabled", bEnableWardTimedBlock);
     ini.SetDoubleValue("WardTimedBlock", "fWindowMs", fWardTimedBlockWindowMs);

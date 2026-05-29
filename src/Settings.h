@@ -140,6 +140,7 @@ public:
 
     // Timed Dodge I-Frames
     bool  bTimedDodgeIframes{ true };             // Player cannot be damaged during slomo
+    float fTimedDodgeAttackerImmunity{ 1.0f };    // Seconds of immunity vs the triggering attacker after timed dodge (0 = off)
 
     // Timed Dodge Counter Attack (reuses timed block counter attack system)
     bool  bTimedDodgeCounterAttack{ true };       // Allow counter attack to cancel slomo
@@ -180,6 +181,12 @@ public:
     // Timed Dodge Sound
     bool  bTimedDodgeSound{ true };               // Play sound on timed dodge
     float fTimedDodgeSoundVolume{ 1.0f };         // Volume for timed dodge WAV (0.0 - 1.0)
+
+    // Timed Dodge - Precision Integration (stricter hitbox-based detection)
+    bool  bPrecisionStrictDodge{ true };             // Require active Precision hitbox (not just attack anim state)
+    bool  bPrecisionFallbackToAttackState{ false };  // Fall back to legacy AttackState check if no hitbox found
+    float fPrecisionReachTolerance{ 64.0f };         // Extra units added to weapon reach for leniency
+    float fPrecisionLookaheadSec{ 0.2f };            // Seconds of velocity projection when estimating reach
 
     //==========================================================================
     // Ward Timed Block — melee hits during ward timing window (separate from shield block)

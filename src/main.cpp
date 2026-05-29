@@ -43,6 +43,7 @@ void MessageHandler(SKSE::MessagingInterface::Message* message) noexcept {
 
             WardEffectHandler::Register();
 
+            PrecisionCache::Init();
             WardTimedBlockState::RegisterPrecision();
             
             CounterDamageHitHandler::Register();

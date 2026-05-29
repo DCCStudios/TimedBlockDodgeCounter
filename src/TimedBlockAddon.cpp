@@ -1047,16 +1047,55 @@ RE::BSEventNotifyControl TimedBlockAddon::ProcessEvent(
         TimedDodgeState::OnPlayerHit(defender);
         return Result::kContinue;
     }
+    
+    // Attacker immunity: block damage from the actor that triggered the timed dodge
+    {
+        RE::Actor* hitSource = a_event->cause ? a_event->cause->As<RE::Actor>() : nullptr;
+        if (hitSource && TimedDodgeState::IsAttackerImmune(hitSource)) {
+            auto* avOwner = defender->AsActorValueOwner();
+            if (avOwner && PlayerHealthState::primed) {
+                float currentHp = avOwner->GetActorValue(RE::ActorValue::kHealth);
+                float dmg = PlayerHealthState::lastFrameHealth - currentHp;
+                if (dmg > 0.5f) {
+                    avOwner->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth, dmg);
+                    auto* settings = Settings::GetSingleton();
+                    if (settings->bDebugLogging) {
+                        logger::info("[TIMED DODGE] Attacker immunity: blocked {:.1f} damage from '{}'",
+                            dmg, hitSource->GetName());
+                    }
+                }
+            }
+            return Result::kContinue;
+        }
+    }
 
     // Hit-during-dodge: if the player is mid-dodge and gets hit, retroactively
     // trigger the timed dodge with this attacker (the hit proves the dodge was timed).
-    // Also skip damage cooldown — hits during a dodge are absorbed by the dodge
-    // mod's i-frames, not real damage the player failed to avoid.
+    // The triggering hit may have dealt damage if the dodge mod's own i-frames
+    // already expired, so restore HP when the timed dodge activates successfully.
     if (TimedDodgeState::inDodgeAnimation) {
         if (!TimedDodgeState::active) {
             RE::Actor* hitAttacker = a_event->cause ? a_event->cause->As<RE::Actor>() : nullptr;
             if (hitAttacker && hitAttacker != defender) {
-                TimedDodgeState::TryTriggerFromHit(hitAttacker);
+                if (TimedDodgeState::TryTriggerFromHit(hitAttacker)) {
+                    // Undo damage from the triggering hit (dodge mod i-frames may have expired)
+                    if (PlayerHealthState::primed) {
+                        auto* avOwner = defender->AsActorValueOwner();
+                        if (avOwner) {
+                            float currentHp = avOwner->GetActorValue(RE::ActorValue::kHealth);
+                            float damageTaken = PlayerHealthState::lastFrameHealth - currentHp;
+                            if (damageTaken > 0.5f) {
+                                avOwner->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage,
+                                    RE::ActorValue::kHealth, damageTaken);
+                                auto* settings = Settings::GetSingleton();
+                                if (settings->bDebugLogging) {
+                                    logger::info("[TIMED DODGE] Restored {:.1f} HP from triggering hit (dodge i-frames had expired)",
+                                        damageTaken);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         return Result::kContinue;
@@ -4585,16 +4624,22 @@ void TimedDodgeState::Start(RE::Actor* attacker)
         static_cast<long long>(settings->fTimedDodgeSlomoDuration * 1000.0f));
     lastBlurUpdateTime = now;
     
-    // Store attacker
+    // Store attacker + start attacker immunity window
     if (attacker) {
         attackerHandle = attacker->GetHandle();
+        if (settings->fTimedDodgeAttackerImmunity > 0.0f) {
+            immuneAttackerHandle = attacker->GetHandle();
+            immuneAttackerExpiry = now + std::chrono::milliseconds(
+                static_cast<long long>(settings->fTimedDodgeAttackerImmunity * 1000.0f));
+        }
     }
     
-    // Start slow-motion via global time multiplier
-    SKSE::GetTaskInterface()->AddTask([speed = settings->fTimedDodgeSlomoSpeed]() {
+    // Start slow-motion via global time multiplier (set directly, not via AddTask,
+    // to avoid a race where End() restores GTM=1.0 before the deferred task fires)
+    {
         static REL::Relocation<float*> gtm{ RELOCATION_ID(511883, 388443) };
-        *gtm = speed;
-    });
+        *gtm = settings->fTimedDodgeSlomoSpeed;
+    }
     
     // Arm extended i-frames (dodge animation's own i-frames play out first via MaxsuIFrame,
     // then we take over with graph variables for the remaining slomo duration)
@@ -4974,6 +5019,22 @@ void TimedDodgeState::OnPlayerHit(RE::Actor* player)
     }
 }
 
+bool TimedDodgeState::IsAttackerImmune(RE::Actor* attacker)
+{
+    if (!attacker) return false;
+    auto* settings = Settings::GetSingleton();
+    if (settings->fTimedDodgeAttackerImmunity <= 0.0f) return false;
+    
+    auto immunePtr = immuneAttackerHandle.get().get();
+    if (!immunePtr || immunePtr != attacker) return false;
+    
+    if (std::chrono::steady_clock::now() >= immuneAttackerExpiry) {
+        immuneAttackerHandle = RE::ActorHandle{};
+        return false;
+    }
+    return true;
+}
+
 void TimedDodgeState::InitializeBlurIMOD()
 {
     // Use the GetHit IMOD (0x162) directly instead of cloning
@@ -5048,23 +5109,68 @@ RE::Actor* TimedDodgeState::FindAttackingEnemyInRange(RE::Actor* player, float r
             continue;
         }
         
-        // Accept any hostile actor in combat that is actively attacking.
-        // No currentCombatTarget check — enemies frequently re-target mid-swing
-        // in group combat, and an attack aimed at a follower near the player
-        // still counts as something worth dodging.
+        // Precision strict mode: require active hitbox + reach validation
+        if (settings->bPrecisionStrictDodge && PrecisionCache::g_api) {
+            float capsuleLen = PrecisionCache::g_api->GetAttackCollisionCapsuleLength(
+                actorHandle, PRECISION_API::RequestedAttackCollisionType::Current);
+            
+            if (capsuleLen > 0.0f) {
+                float effectiveReach = capsuleLen + settings->fPrecisionReachTolerance;
+                
+                if (settings->fPrecisionLookaheadSec > 0.0f) {
+                    if (auto* charCtrl = actor->GetCharController()) {
+                        RE::hkVector4 vel;
+                        charCtrl->GetLinearVelocityImpl(vel);
+                        RE::NiPoint3 worldVel{ vel.quad.m128_f32[0], vel.quad.m128_f32[1], vel.quad.m128_f32[2] };
+                        
+                        RE::NiPoint3 toPlayer = playerPos - actor->GetPosition();
+                        float dist = toPlayer.Length();
+                        if (dist > 0.001f) {
+                            toPlayer /= dist;
+                            float approachSpeed = worldVel.x * toPlayer.x + worldVel.y * toPlayer.y + worldVel.z * toPlayer.z;
+                            if (approachSpeed > 0.0f) {
+                                effectiveReach += approachSpeed * settings->fPrecisionLookaheadSec;
+                            }
+                        }
+                    }
+                }
+                
+                float dist = std::sqrt(distSq);
+                if (dist <= effectiveReach) {
+                    if (dist < std::sqrt(closestDistSq)) {
+                        closestDistSq = distSq;
+                        closestAttacker = actor;
+                    }
+                    if (settings->bDebugLogging) {
+                        logger::info("[TIMED DODGE] Precision strict: '{}' has active hitbox (capsule={:.0f}, effective={:.0f}, dist={:.0f})",
+                            actor->GetName(), capsuleLen, effectiveReach, dist);
+                    }
+                }
+                continue;
+            }
+            
+            if (!settings->bPrecisionFallbackToAttackState) {
+                continue;
+            }
+        }
+        
+        // Legacy path: check vanilla attack state enum (only active-threat states)
         auto attackState = actor->AsActorState()->GetAttackState();
-        bool isAttacking = (attackState == RE::ATTACK_STATE_ENUM::kDraw ||
-                           attackState == RE::ATTACK_STATE_ENUM::kSwing ||
+        bool isAttacking = (attackState == RE::ATTACK_STATE_ENUM::kSwing ||
                            attackState == RE::ATTACK_STATE_ENUM::kHit ||
                            attackState == RE::ATTACK_STATE_ENUM::kNextAttack ||
-                           attackState == RE::ATTACK_STATE_ENUM::kFollowThrough ||
                            attackState == RE::ATTACK_STATE_ENUM::kBash);
         
         if (!isAttacking) {
             continue;
         }
         
-        // Track closest attacker
+        // Only count enemies that are actually targeting the player
+        auto targetPtr = actor->GetActorRuntimeData().currentCombatTarget.get().get();
+        if (!targetPtr || targetPtr != player) {
+            continue;
+        }
+        
         if (distSq < closestDistSq) {
             closestDistSq = distSq;
             closestAttacker = actor;

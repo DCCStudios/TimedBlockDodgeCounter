@@ -5,6 +5,22 @@
 
 #include <vector>
 
+namespace PrecisionCache
+{
+    inline PRECISION_API::IVPrecision1* g_api{ nullptr };
+
+    inline void Init()
+    {
+        g_api = reinterpret_cast<PRECISION_API::IVPrecision1*>(
+            PRECISION_API::RequestPluginAPI(PRECISION_API::InterfaceVersion::V1));
+        if (g_api) {
+            logger::info("[PrecisionCache] API (V1) cached successfully");
+        } else {
+            logger::info("[PrecisionCache] Precision not available — strict dodge detection disabled");
+        }
+    }
+}
+
 // RELOCATION_OFFSET macro for SE/AE compatibility
 #ifndef RELOCATION_OFFSET
 #   ifdef SKYRIM_SUPPORT_AE
@@ -492,6 +508,12 @@ namespace TimedDodgeState
     
     // Attacker tracking
     inline RE::ActorHandle attackerHandle;
+    
+    // Attacker immunity: ignore damage from the triggering attacker for a short duration
+    inline RE::ActorHandle immuneAttackerHandle;
+    inline std::chrono::steady_clock::time_point immuneAttackerExpiry;
+    
+    bool IsAttackerImmune(RE::Actor* attacker);
     
     // Check if an animation event name is a dodge event
     bool IsDodgeEvent(const char* eventName);
