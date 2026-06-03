@@ -70,6 +70,7 @@ void Settings::LoadSettings() {
     bEnableSound = ini.GetBoolValue("Sound", "bEnableSound", true);
     sSoundPath = ini.GetValue("Sound", "sSoundPath", "UIMenuOK");
     bUseCustomWav = ini.GetBoolValue("Sound", "bUseCustomWav", false);
+    bUseInGameAudio = ini.GetBoolValue("Sound", "bUseInGameAudio", false);
     fCustomWavVolume = static_cast<float>(ini.GetDoubleValue("Sound", "fCustomWavVolume", 1.0));
     
     // Load Slowmo settings
@@ -81,6 +82,7 @@ void Settings::LoadSettings() {
     bEnableCounterAttack = ini.GetBoolValue("CounterAttack", "bEnableCounterAttack", false);
     fCounterAttackWindow = static_cast<float>(ini.GetDoubleValue("CounterAttack", "fCounterAttackWindow", 0.5));
     bPreventPlayerStagger = ini.GetBoolValue("CounterAttack", "bPreventPlayerStagger", true);
+    bAltPowerAttackFallback = ini.GetBoolValue("CounterAttack", "bAltPowerAttackFallback", false);
     
     // Load Counter Damage Bonus settings
     bEnableCounterDamageBonus = ini.GetBoolValue("CounterDamage", "bEnableCounterDamageBonus", false);
@@ -89,12 +91,13 @@ void Settings::LoadSettings() {
     
     // Load Counter Strike Sound settings
     bEnableCounterStrikeSound = ini.GetBoolValue("CounterDamage", "bEnableCounterStrikeSound", true);
+    bCounterStrikeInGameAudio = ini.GetBoolValue("CounterDamage", "bCounterStrikeInGameAudio", false);
     fCounterStrikeSoundVolume = static_cast<float>(ini.GetDoubleValue("CounterDamage", "fCounterStrikeSoundVolume", 1.0));
     
     // Load Counter Lunge settings
     bEnableCounterLunge = ini.GetBoolValue("CounterLunge", "bEnableCounterLunge", false);
     fCounterLungeDistance = static_cast<float>(ini.GetDoubleValue("CounterLunge", "fCounterLungeDistance", 150.0));
-    fCounterLungeSpeed = static_cast<float>(ini.GetDoubleValue("CounterLunge", "fCounterLungeSpeed", 2.0));
+    fCounterLungeSpeed = static_cast<float>(ini.GetDoubleValue("CounterLunge", "fCounterLungeSpeed", 0.05));
     iCounterLungeCurve = static_cast<int>(ini.GetLongValue("CounterLunge", "iCurve", 0));
     fCounterLungeMeleeStopDistance = static_cast<float>(ini.GetDoubleValue("CounterLunge", "fMeleeStopDistance", 128.0));
     
@@ -132,7 +135,8 @@ void Settings::LoadSettings() {
     fTimedDodgeCounterDamagePercent = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterDamagePercent", 50.0));
     fTimedDodgeCounterDamageTimeout = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterDamageTimeout", 3.0));
     bTimedDodgeCounterLunge = ini.GetBoolValue("TimedDodge", "bCounterLunge", true);
-    fTimedDodgeCounterLungeSpeed = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterLungeSpeed", 2.0));
+    fTimedDodgeCounterLungeDistance = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterLungeDistance", 150.0));
+    fTimedDodgeCounterLungeSpeed = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterLungeSpeed", 0.05));
     iTimedDodgeCounterLungeCurve = static_cast<int>(ini.GetLongValue("TimedDodge", "iCounterLungeCurve", 0));
     fTimedDodgeCounterLungeMeleeStopDistance = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fCounterLungeMeleeStop", 128.0));
     bTimedDodgeCounterSpellHit = ini.GetBoolValue("TimedDodge", "bCounterSpellHit", true);
@@ -154,6 +158,7 @@ void Settings::LoadSettings() {
     fTimedDodgeAttackerSlowSpeed = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fAttackerSlowSpeed", 0.05));
     fTimedDodgeAttackerSlowDuration = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fAttackerSlowDuration", 1.5));
     bTimedDodgeSound = ini.GetBoolValue("TimedDodge", "bSound", true);
+    bTimedDodgeInGameAudio = ini.GetBoolValue("TimedDodge", "bInGameAudio", false);
     fTimedDodgeSoundVolume = static_cast<float>(ini.GetDoubleValue("TimedDodge", "fSoundVolume", 1.0));
     bPrecisionStrictDodge = ini.GetBoolValue("TimedDodge", "bPrecisionStrictDodge", true);
     bPrecisionFallbackToAttackState = ini.GetBoolValue("TimedDodge", "bPrecisionFallbackToAttackState", true);
@@ -174,6 +179,7 @@ void Settings::LoadSettings() {
     }
     fWardDmgReduction = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fDmgReduction", fWardDmgReduction));
     bWardTimedBlockSound = ini.GetBoolValue("WardTimedBlock", "bSound", true);
+    bWardTimedBlockInGameAudio = ini.GetBoolValue("WardTimedBlock", "bInGameAudio", false);
     sWardTimedBlockSoundFile = ini.GetValue("WardTimedBlock", "sSoundFile", "wardtimedblock.wav");
     fWardTimedBlockSoundVolume = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fSoundVolume", 1.0));
     bWardTimedBlockCounterAttack = ini.GetBoolValue("WardTimedBlock", "bCounterAttack", true);
@@ -182,9 +188,11 @@ void Settings::LoadSettings() {
     bWardCounterSpellHit = ini.GetBoolValue("WardTimedBlock", "bCounterSpellHit", true);
     fWardCounterSpellInFlightMs = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fCounterSpellInFlightMs", 5000.0));
     bWardCounterSpellSound = ini.GetBoolValue("WardTimedBlock", "bCounterSpellSound", true);
+    bWardCounterSpellInGameAudio = ini.GetBoolValue("WardTimedBlock", "bCounterSpellInGameAudio", false);
     sWardCounterSpellSoundFile = ini.GetValue("WardTimedBlock", "sCounterSpellSoundFile", "wardcounterspell.wav");
     fWardCounterSpellSoundVolume = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fCounterSpellSoundVolume", 1.0));
     fWardTimedBlockCooldown = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fCooldown", 1.0));
+    fWardAttackerImmunity = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fAttackerImmunity", 1.0));
     fWardMeleeDetectionRange = static_cast<float>(ini.GetDoubleValue("WardTimedBlock", "fMeleeDetectionRange", 300.0));
     bWardRequire2HForTwoHanders = ini.GetBoolValue("WardTimedBlock", "bRequire2HForTwoHanders", false);
     bWardOmnidirectional = ini.GetBoolValue("WardTimedBlock", "bOmnidirectional", false);
@@ -215,8 +223,9 @@ void Settings::LoadSettings() {
     fCooldownDurationMs = std::clamp(fCooldownDurationMs, 0.0f, 1000.0f);
     fTimedDodgeCounterWindowMs = std::clamp(fTimedDodgeCounterWindowMs, 50.0f, 30000.0f);
     fCounterLungeMeleeStopDistance = std::clamp(fCounterLungeMeleeStopDistance, 32.0f, 512.0f);
-    fCounterLungeSpeed = std::clamp(fCounterLungeSpeed, 0.1f, 50.0f);
-    fTimedDodgeCounterLungeSpeed = std::clamp(fTimedDodgeCounterLungeSpeed, 0.1f, 50.0f);
+    fCounterLungeSpeed = std::clamp(fCounterLungeSpeed, 0.01f, 1.0f);
+    fTimedDodgeCounterLungeDistance = std::clamp(fTimedDodgeCounterLungeDistance, 50.0f, 500.0f);
+    fTimedDodgeCounterLungeSpeed = std::clamp(fTimedDodgeCounterLungeSpeed, 0.01f, 1.0f);
     fTimedDodgeCounterLungeMeleeStopDistance = std::clamp(fTimedDodgeCounterLungeMeleeStopDistance, 32.0f, 512.0f);
     fTimedDodgeCounterSpellDamagePercent = std::clamp(fTimedDodgeCounterSpellDamagePercent, 10.0f, 500.0f);
     fTimedDodgeCounterRangedDamagePercent = std::clamp(fTimedDodgeCounterRangedDamagePercent, 10.0f, 500.0f);
@@ -236,6 +245,7 @@ void Settings::LoadSettings() {
     fWardCounterDamagePercent = std::clamp(fWardCounterDamagePercent, 0.0f, 1000.0f);
     fWardCounterSpellInFlightMs = std::clamp(fWardCounterSpellInFlightMs, 100.0f, 30000.0f);
     fWardTimedBlockCooldown = std::clamp(fWardTimedBlockCooldown, 0.0f, 10.0f);
+    fWardAttackerImmunity = std::clamp(fWardAttackerImmunity, 0.0f, 10.0f);
     fWardMagickaRestorePercent = std::clamp(fWardMagickaRestorePercent, 0.0f, 100.0f);
     fWardMeleeDetectionRange = std::clamp(fWardMeleeDetectionRange, 50.0f, 1000.0f);
     fWindowExclusionMs = std::clamp(fWindowExclusionMs, 0.0f, 5000.0f);
@@ -348,6 +358,7 @@ void Settings::SaveSettings() {
     ini.SetBoolValue("Sound", "bEnableSound", bEnableSound);
     ini.SetValue("Sound", "sSoundPath", sSoundPath.c_str());
     ini.SetBoolValue("Sound", "bUseCustomWav", bUseCustomWav);
+    ini.SetBoolValue("Sound", "bUseInGameAudio", bUseInGameAudio);
     ini.SetDoubleValue("Sound", "fCustomWavVolume", fCustomWavVolume);
     
     // Save Slowmo settings
@@ -359,6 +370,7 @@ void Settings::SaveSettings() {
     ini.SetBoolValue("CounterAttack", "bEnableCounterAttack", bEnableCounterAttack);
     ini.SetDoubleValue("CounterAttack", "fCounterAttackWindow", fCounterAttackWindow);
     ini.SetBoolValue("CounterAttack", "bPreventPlayerStagger", bPreventPlayerStagger);
+    ini.SetBoolValue("CounterAttack", "bAltPowerAttackFallback", bAltPowerAttackFallback);
     
     // Save Counter Damage Bonus settings
     ini.SetBoolValue("CounterDamage", "bEnableCounterDamageBonus", bEnableCounterDamageBonus);
@@ -367,6 +379,7 @@ void Settings::SaveSettings() {
     
     // Save Counter Strike Sound settings
     ini.SetBoolValue("CounterDamage", "bEnableCounterStrikeSound", bEnableCounterStrikeSound);
+    ini.SetBoolValue("CounterDamage", "bCounterStrikeInGameAudio", bCounterStrikeInGameAudio);
     ini.SetDoubleValue("CounterDamage", "fCounterStrikeSoundVolume", fCounterStrikeSoundVolume);
     
     // Save Counter Lunge settings
@@ -410,6 +423,7 @@ void Settings::SaveSettings() {
     ini.SetDoubleValue("TimedDodge", "fCounterDamagePercent", fTimedDodgeCounterDamagePercent);
     ini.SetDoubleValue("TimedDodge", "fCounterDamageTimeout", fTimedDodgeCounterDamageTimeout);
     ini.SetBoolValue("TimedDodge", "bCounterLunge", bTimedDodgeCounterLunge);
+    ini.SetDoubleValue("TimedDodge", "fCounterLungeDistance", fTimedDodgeCounterLungeDistance);
     ini.SetDoubleValue("TimedDodge", "fCounterLungeSpeed", fTimedDodgeCounterLungeSpeed);
     ini.SetLongValue("TimedDodge", "iCounterLungeCurve", iTimedDodgeCounterLungeCurve);
     ini.SetDoubleValue("TimedDodge", "fCounterLungeMeleeStop", fTimedDodgeCounterLungeMeleeStopDistance);
@@ -432,6 +446,7 @@ void Settings::SaveSettings() {
     ini.SetDoubleValue("TimedDodge", "fAttackerSlowSpeed", fTimedDodgeAttackerSlowSpeed);
     ini.SetDoubleValue("TimedDodge", "fAttackerSlowDuration", fTimedDodgeAttackerSlowDuration);
     ini.SetBoolValue("TimedDodge", "bSound", bTimedDodgeSound);
+    ini.SetBoolValue("TimedDodge", "bInGameAudio", bTimedDodgeInGameAudio);
     ini.SetDoubleValue("TimedDodge", "fSoundVolume", fTimedDodgeSoundVolume);
     ini.SetBoolValue("TimedDodge", "bPrecisionStrictDodge", bPrecisionStrictDodge);
     ini.SetBoolValue("TimedDodge", "bPrecisionFallbackToAttackState", bPrecisionFallbackToAttackState);
@@ -445,6 +460,7 @@ void Settings::SaveSettings() {
     ini.SetDoubleValue("WardTimedBlock", "fLargeStagger", fWardLargeStaggerMagnitude);
     ini.SetDoubleValue("WardTimedBlock", "fDmgReduction", fWardDmgReduction);
     ini.SetBoolValue("WardTimedBlock", "bSound", bWardTimedBlockSound);
+    ini.SetBoolValue("WardTimedBlock", "bInGameAudio", bWardTimedBlockInGameAudio);
     ini.SetValue("WardTimedBlock", "sSoundFile", sWardTimedBlockSoundFile.c_str());
     ini.SetDoubleValue("WardTimedBlock", "fSoundVolume", fWardTimedBlockSoundVolume);
     ini.SetBoolValue("WardTimedBlock", "bCounterAttack", bWardTimedBlockCounterAttack);
@@ -453,9 +469,11 @@ void Settings::SaveSettings() {
     ini.SetBoolValue("WardTimedBlock", "bCounterSpellHit", bWardCounterSpellHit);
     ini.SetDoubleValue("WardTimedBlock", "fCounterSpellInFlightMs", fWardCounterSpellInFlightMs);
     ini.SetBoolValue("WardTimedBlock", "bCounterSpellSound", bWardCounterSpellSound);
+    ini.SetBoolValue("WardTimedBlock", "bCounterSpellInGameAudio", bWardCounterSpellInGameAudio);
     ini.SetValue("WardTimedBlock", "sCounterSpellSoundFile", sWardCounterSpellSoundFile.c_str());
     ini.SetDoubleValue("WardTimedBlock", "fCounterSpellSoundVolume", fWardCounterSpellSoundVolume);
     ini.SetDoubleValue("WardTimedBlock", "fCooldown", fWardTimedBlockCooldown);
+    ini.SetDoubleValue("WardTimedBlock", "fAttackerImmunity", fWardAttackerImmunity);
     ini.SetDoubleValue("WardTimedBlock", "fMeleeDetectionRange", fWardMeleeDetectionRange);
     ini.SetBoolValue("WardTimedBlock", "bRequire2HForTwoHanders", bWardRequire2HForTwoHanders);
     ini.SetBoolValue("WardTimedBlock", "bOmnidirectional", bWardOmnidirectional);

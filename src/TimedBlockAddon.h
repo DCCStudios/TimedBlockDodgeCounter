@@ -331,6 +331,11 @@ namespace WardTimedBlockState
     inline bool onCooldown{ false };
     inline std::chrono::steady_clock::time_point cooldownEndTime;
 
+    // Attacker immunity: ignore damage from the triggering attacker for a short duration
+    inline RE::ActorHandle immuneAttackerHandle;
+    inline std::chrono::steady_clock::time_point immuneAttackerExpiry;
+    bool IsAttackerImmune(RE::Actor* attacker);
+
     // Cached MagicWard keyword — set once by InitWardKeyword() at kDataLoaded
     inline RE::BGSKeyword* wardKeyword{ nullptr };
 
@@ -515,6 +520,12 @@ namespace TimedDodgeState
     
     bool IsAttackerImmune(RE::Actor* attacker);
     
+    // Custom Dodge plugin integration (CustomDodge.esp global polling)
+    inline RE::TESGlobal* customDodgeGlobal{ nullptr };
+    inline bool customDodgeWasActive{ false };
+    void InitCustomDodge();
+    void PollCustomDodge();
+
     // Check if an animation event name is a dodge event
     bool IsDodgeEvent(const char* eventName);
     
@@ -593,3 +604,11 @@ public:
 private:
     BlockKeyInputHandler() = default;
 };
+
+// In-Game Audio Engine — plays sounds through the game's 3D audio pipeline
+namespace InGameAudio
+{
+    enum class Slot { kTrigger = 0, kCounter = 1 };
+    void Init();
+    void PlaySound(const std::string& baseFilename, Slot slot, float volume);
+}

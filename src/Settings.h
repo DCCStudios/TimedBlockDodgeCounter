@@ -47,6 +47,7 @@ public:
     bool  bEnableSound{ true };
     std::string sSoundPath{ "UIMenuOK" };  // Sound descriptor EditorID
     bool  bUseCustomWav{ false };          // Use custom WAV file instead of sound descriptor
+    bool  bUseInGameAudio{ false };        // Play WAV through game engine (3D/reverb/volume slider)
     float fCustomWavVolume{ 1.0f };        // Volume for custom WAV (0.0 - 1.0)
     
     //==========================================================================
@@ -62,6 +63,7 @@ public:
     bool  bEnableCounterAttack{ false };   // Disabled by default
     float fCounterAttackWindow{ 0.5f };    // Window in seconds to perform counter attack
     bool  bPreventPlayerStagger{ true };   // Prevent player stagger on successful timed block
+    bool  bAltPowerAttackFallback{ false }; // Treat unbound mouse buttons as attack input (for alternate PA mods)
     
     //==========================================================================
     // Counter Attack Damage Bonus - Increase damage of counter hit
@@ -74,6 +76,7 @@ public:
     // Counter Strike Sound - Sound when counter hit connects
     //==========================================================================
     bool  bEnableCounterStrikeSound{ true };     // Enabled by default
+    bool  bCounterStrikeInGameAudio{ false };    // Play through game engine
     float fCounterStrikeSoundVolume{ 1.0f };     // Volume 0.0 - 1.0
     
     //==========================================================================
@@ -81,7 +84,7 @@ public:
     //==========================================================================
     bool  bEnableCounterLunge{ false };     // Disabled by default
     float fCounterLungeDistance{ 150.0f };  // Max distance to lunge (game units)
-    float fCounterLungeSpeed{ 2.0f };       // Speed of lunge
+    float fCounterLungeSpeed{ 0.05f };       // Speed of lunge
     int   iCounterLungeCurve{ 0 };          // Velocity curve: 0=Bell, 1=Linear, 2=EaseIn, 3=EaseOut, 4=CubicIn, 5=CubicOut
     float fCounterLungeMeleeStopDistance{ 128.0f }; // Stop lunge this far from target (timed block counter)
     
@@ -157,7 +160,8 @@ public:
     float fTimedDodgeCounterDamagePercent{ 50.0f }; // Counter damage bonus for timed dodge (50 = 1.5x total)
     float fTimedDodgeCounterDamageTimeout{ 3.0f }; // Timeout for dodge counter damage bonus (longer than block due to dodge exit)
     bool  bTimedDodgeCounterLunge{ true };            // Lunge toward attacker on timed dodge counter
-    float fTimedDodgeCounterLungeSpeed{ 2.0f };     // Lunge speed for timed dodge counter
+    float fTimedDodgeCounterLungeDistance{ 150.0f }; // Max lunge distance for timed dodge counter
+    float fTimedDodgeCounterLungeSpeed{ 0.05f };     // Lunge speed for timed dodge counter
     int   iTimedDodgeCounterLungeCurve{ 0 };         // Velocity curve for timed dodge lunge (same enum as iCounterLungeCurve)
     float fTimedDodgeCounterLungeMeleeStopDistance{ 128.0f }; // Stop distance for timed dodge lunge
     bool  bTimedDodgeCounterSpellHit{ true };                  // Allow spell counter attacks from timed dodge
@@ -189,6 +193,7 @@ public:
 
     // Timed Dodge Sound
     bool  bTimedDodgeSound{ true };               // Play sound on timed dodge
+    bool  bTimedDodgeInGameAudio{ false };        // Play through game engine
     float fTimedDodgeSoundVolume{ 1.0f };         // Volume for timed dodge WAV (0.0 - 1.0)
 
     // Timed Dodge - Precision Integration (stricter hitbox-based detection)
@@ -210,6 +215,7 @@ public:
     float fWardDmgReduction{ 100.0f };          // Ward timed block damage reduction % (100 = full cancel)
 
     bool  bWardTimedBlockSound{ true };
+    bool  bWardTimedBlockInGameAudio{ false };
     std::string sWardTimedBlockSoundFile{ "wardtimedblock.wav" };
     float fWardTimedBlockSoundVolume{ 1.0f };
 
@@ -223,10 +229,13 @@ public:
     // If nothing lands in this window the bonus expires.
     float fWardCounterSpellInFlightMs{ 5000.0f };
     bool  bWardCounterSpellSound{ true };
+    bool  bWardCounterSpellInGameAudio{ false };
     std::string sWardCounterSpellSoundFile{ "wardcounterspell.wav" };
     float fWardCounterSpellSoundVolume{ 1.0f };
 
     float fWardTimedBlockCooldown{ 1.0f };
+
+    float fWardAttackerImmunity{ 1.0f };    // Seconds of immunity vs the triggering attacker after ward parry (0 = off)
 
     // Melee range for ward hit detection (game units)
     float fWardMeleeDetectionRange{ 300.0f };

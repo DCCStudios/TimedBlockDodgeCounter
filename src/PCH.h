@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <random>
 #include <thread>
 
 // Undefine Windows API macros that conflict with CommonLibSSE functions

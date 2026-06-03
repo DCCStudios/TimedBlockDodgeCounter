@@ -430,6 +430,12 @@ namespace Menu
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip("How long after a parry you can press attack to counter.\n300ms = tight window\n500ms = default\n800ms = very generous");
                     }
+                    if (ImGui::Checkbox("Alt Power Attack Input##tb", &settings->bAltPowerAttackFallback)) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Enable if you use an alternate power attack mod that\nbinds power attack to a non-standard mouse button\n(middle mouse, mouse 4/5, etc.).\n\nTreats unbound extra mouse buttons as attack input\nduring the counter window.\n\nDefault: Off");
+                    }
                     ImGui::Unindent();
                 }
 
@@ -476,11 +482,11 @@ namespace Menu
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip("Maximum travel distance toward the target.\n100-150 = short (daggers)\n200-300 = medium (swords, default)\n400-500 = long (closing large gaps)");
                     }
-                    if (ImGui::SliderFloat("Lunge Speed##tb", &settings->fCounterLungeSpeed, 0.1f, 50.0f, "%.1f")) {
+                    if (ImGui::SliderFloat("Lunge Speed##tb", &settings->fCounterLungeSpeed, 0.01f, 1.0f, "%.3f")) {
                         State::MarkChanged();
                     }
                     if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("Speed of the lunge movement.\nHigher = snappier dash, lower = smoother glide.\n\n5 = slow glide\n12 = default\n30+ = instant dash");
+                        ImGui::SetTooltip("Speed of the lunge movement.\nHigher = snappier dash, lower = smoother glide.\n\nDefault: 0.050");
                     }
                     {
                         static const char* kCurveItems[] = {
@@ -656,7 +662,7 @@ namespace Menu
                             State::MarkChanged();
                         }
                         if (ImGui::IsItemHovered()) {
-                            ImGui::SetTooltip("Playback volume for the custom WAV.\nNote: adjusts Windows wave output briefly.");
+                            ImGui::SetTooltip("Playback volume for the custom WAV.");
                         }
                     }
                     ImGui::Unindent();
@@ -1017,11 +1023,18 @@ namespace Menu
                         if (settings->bTimedDodgeCounterLunge) {
                             ImGui::Indent();
 
-                            if (ImGui::SliderFloat("Lunge Speed##dodgeCounter", &settings->fTimedDodgeCounterLungeSpeed, 0.1f, 50.0f, "%.1f")) {
+                            if (ImGui::SliderFloat("Lunge Distance##dodgeCounter", &settings->fTimedDodgeCounterLungeDistance, 50.0f, 500.0f, "%.0f units")) {
                                 State::MarkChanged();
                             }
                             if (ImGui::IsItemHovered()) {
-                                ImGui::SetTooltip("Speed of the timed dodge counter lunge.\nHigher = faster dash, lower = smoother glide.\n\n400 = slow\n800 = default\n1500 = fast dash");
+                                ImGui::SetTooltip("Maximum travel distance for the lunge (game units).\nLonger = more aggressive gap-close.\n\nDefault: 150 units");
+                            }
+
+                            if (ImGui::SliderFloat("Lunge Speed##dodgeCounter", &settings->fTimedDodgeCounterLungeSpeed, 0.01f, 1.0f, "%.3f")) {
+                                State::MarkChanged();
+                            }
+                            if (ImGui::IsItemHovered()) {
+                                ImGui::SetTooltip("Speed of the timed dodge counter lunge.\nHigher = faster/snappier, lower = smoother glide.\n\nDefault: 0.050");
                             }
 
                             {
@@ -1310,6 +1323,13 @@ namespace Menu
                     }
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip("Minimum time before a new ward parry window opens\nafter a successful one.\n\nPrevents instant re-parrying in group fights.\n0 = no cooldown");
+                    }
+
+                    if (ImGui::SliderFloat("Attacker Immunity (sec)##ward", &settings->fWardAttackerImmunity, 0.0f, 5.0f, "%.1f")) {
+                        State::MarkChanged();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("After a successful ward parry, ignore all damage\nfrom the triggering attacker for this duration.\n\nPrevents follow-up hits from the same attacker\nfrom dealing damage during the counter window.\n\n0 = disabled");
                     }
 
                     ImGui::TreePop();

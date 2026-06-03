@@ -394,6 +394,9 @@ void AnimSpeedManager::PlayerAnimationHook::PlayerCharacter_UpdateAnimation(RE::
     // Update counter slow time (check for timeout)
     CounterSlowTimeState::Update();
     
+    // Poll Custom Dodge plugin global (Dodge_IsDodging) for dodge transitions
+    TimedDodgeState::PollCustomDodge();
+
     // Update timed dodge state (slomo timer, i-frame health tracking, radial blur blending)
     TimedDodgeState::Update();
     
@@ -1140,6 +1143,27 @@ RE::BSEventNotifyControl TimedBlockAddon::ProcessEvent(
         }
     }
 
+    // Attacker immunity: block damage from the actor that triggered the ward parry
+    {
+        RE::Actor* hitSource = a_event->cause ? a_event->cause->As<RE::Actor>() : nullptr;
+        if (hitSource && WardTimedBlockState::IsAttackerImmune(hitSource)) {
+            auto* avOwner = defender->AsActorValueOwner();
+            if (avOwner && PlayerHealthState::primed) {
+                float currentHp = avOwner->GetActorValue(RE::ActorValue::kHealth);
+                float dmg = PlayerHealthState::lastFrameHealth - currentHp;
+                if (dmg > 0.5f) {
+                    avOwner->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kDamage, RE::ActorValue::kHealth, dmg);
+                    auto* settings = Settings::GetSingleton();
+                    if (settings->bDebugLogging) {
+                        logger::info("[WARD TB] Attacker immunity: blocked {:.1f} damage from '{}'",
+                            dmg, hitSource->GetName());
+                    }
+                }
+            }
+            return Result::kContinue;
+        }
+    }
+
     // Hit-during-dodge: if the player is mid-dodge and gets hit, retroactively
     // trigger the timed dodge with this attacker (the hit proves the dodge was timed).
     // The triggering hit may have dealt damage if the dodge mod's own i-frames
@@ -1725,6 +1749,268 @@ static std::shared_ptr<std::vector<uint8_t>> g_timedDodgeAudioBuffer;
 static std::shared_ptr<std::vector<uint8_t>> g_wardTimedBlockAudioBuffer;
 static std::shared_ptr<std::vector<uint8_t>> g_wardCounterSpellAudioBuffer;
 
+//=============================================================================
+// In-Game Audio Engine — CRC32 utility + donor descriptor hijack
+//=============================================================================
+
+static std::filesystem::path PickRandomSoundVariant(const std::string& baseFilename);
+
+namespace InGameAudio
+{
+    // Standard reflected CRC32 (polynomial 0xEDB88320) — same as BSA format
+    static uint32_t CRC32(const char* data, size_t len)
+    {
+        uint32_t crc = 0xFFFFFFFF;
+        for (size_t i = 0; i < len; ++i) {
+            crc ^= static_cast<uint8_t>(data[i]);
+            for (int bit = 0; bit < 8; ++bit) {
+                crc = (crc >> 1) ^ (0xEDB88320 & (-(crc & 1)));
+            }
+        }
+        return ~crc;
+    }
+
+    // Build a BSResource::ID from a path relative to Data/ (e.g. "skse/plugins/timedblockdodgecounter/timedblock.wav")
+    static RE::BSResource::ID MakeResourceID(const std::string& relativePath)
+    {
+        // Normalize: lowercase, backslash separators
+        std::string norm = relativePath;
+        for (char& c : norm) {
+            if (c == '/') c = '\\';
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+
+        // Split into directory, filename stem, extension
+        size_t lastSlash = norm.rfind('\\');
+        size_t lastDot = norm.rfind('.');
+
+        std::string dir, stem, ext;
+        if (lastSlash != std::string::npos) {
+            dir = norm.substr(0, lastSlash);
+            std::string filename = norm.substr(lastSlash + 1);
+            if (lastDot != std::string::npos && lastDot > lastSlash) {
+                stem = norm.substr(lastSlash + 1, lastDot - lastSlash - 1);
+                ext = norm.substr(lastDot + 1);
+            } else {
+                stem = filename;
+            }
+        } else {
+            if (lastDot != std::string::npos) {
+                stem = norm.substr(0, lastDot);
+                ext = norm.substr(lastDot + 1);
+            } else {
+                stem = norm;
+            }
+        }
+
+        RE::BSResource::ID id{};
+        id.dir = CRC32(dir.c_str(), dir.size());
+        id.file = CRC32(stem.c_str(), stem.size());
+        // ext is char[4] in FileID
+        std::memset(id.ext, 0, 4);
+        for (size_t i = 0; i < ext.size() && i < 4; ++i) {
+            id.ext[i] = ext[i];
+        }
+        return id;
+    }
+
+    static RE::BGSSoundDescriptorForm* g_donorA{ nullptr };  // Trigger sounds
+    static RE::BGSSoundDescriptorForm* g_donorB{ nullptr };  // Counter sounds
+    static bool g_initialized{ false };
+
+    void Init()
+    {
+        auto* dh = RE::TESDataHandler::GetSingleton();
+        if (!dh) {
+            logger::error("[IN-GAME AUDIO] TESDataHandler not available");
+            return;
+        }
+
+        // WPNBlade1HandDrawDEMOCACHE01SD = 0x00034903
+        // WPNBlade1HandDrawDEMOCACHE02SD = 0x00034904
+        g_donorA = RE::TESForm::LookupByID<RE::BGSSoundDescriptorForm>(0x00034903);
+        g_donorB = RE::TESForm::LookupByID<RE::BGSSoundDescriptorForm>(0x00034904);
+
+        if (g_donorA && g_donorB) {
+            g_initialized = true;
+            logger::info("[IN-GAME AUDIO] Donor descriptors cached: A=0x{:08X}, B=0x{:08X}",
+                g_donorA->GetFormID(), g_donorB->GetFormID());
+        } else {
+            logger::error("[IN-GAME AUDIO] Failed to find donor SNDR forms in Skyrim.esm "
+                          "(A={}, B={})", g_donorA != nullptr, g_donorB != nullptr);
+        }
+    }
+
+    // Pick a random sound variant from Data/Sound/TimedBlockDodgeCounter/
+    static std::filesystem::path PickInGameSoundVariant(const std::string& baseFilename)
+    {
+        std::filesystem::path dir = std::filesystem::current_path();
+        dir /= "Data";
+        dir /= "Sound";
+        dir /= "TimedBlockDodgeCounter";
+
+        std::filesystem::path basePath(baseFilename);
+        std::string stem = basePath.stem().string();
+        std::string ext  = basePath.extension().string();
+
+        std::vector<std::filesystem::path> candidates;
+
+        std::filesystem::path baseFile = dir / baseFilename;
+        if (std::filesystem::exists(baseFile)) {
+            candidates.push_back(baseFile);
+        }
+
+        for (int i = 1; i <= 99; ++i) {
+            std::filesystem::path variant = dir / (stem + "_" + std::to_string(i) + ext);
+            if (std::filesystem::exists(variant)) {
+                candidates.push_back(variant);
+            } else {
+                break;
+            }
+        }
+
+        if (candidates.empty()) return {};
+        if (candidates.size() == 1) return candidates[0];
+
+        static thread_local std::mt19937 rng{ std::random_device{}() };
+        std::uniform_int_distribution<size_t> dist(0, candidates.size() - 1);
+        return candidates[dist(rng)];
+    }
+
+    // Play a sound through the game engine using a donor descriptor.
+    // baseFilename: e.g. "timedblock.wav"
+    // slot: which donor to use (Trigger for timed block/dodge/ward, Counter for counterstrike/ward spell)
+    // volume: 0.0-1.0
+    //
+    // WAV files for in-game audio must be in Data/Sound/TimedBlockDodgeCounter/
+    // (the engine's sound system only resolves files under Data/Sound/)
+    void PlaySound(const std::string& baseFilename, Slot slot, float volume)
+    {
+        if (!g_initialized) {
+            logger::warn("[IN-GAME AUDIO] Not initialized, cannot play '{}'", baseFilename);
+            return;
+        }
+
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) {
+            logger::warn("[IN-GAME AUDIO] Player null, cannot play '{}'", baseFilename);
+            return;
+        }
+
+        RE::BGSSoundDescriptorForm* donor = (slot == Slot::kTrigger) ? g_donorA : g_donorB;
+        if (!donor || !donor->soundDescriptor) {
+            logger::error("[IN-GAME AUDIO] Donor descriptor null for slot {}",
+                static_cast<int>(slot));
+            return;
+        }
+
+        auto* stdDef = static_cast<RE::BGSStandardSoundDef*>(donor->soundDescriptor);
+        if (!stdDef) {
+            logger::error("[IN-GAME AUDIO] Donor soundDescriptor is not BGSStandardSoundDef");
+            return;
+        }
+
+        // Pick a random variant from Data/Sound/TimedBlockDodgeCounter/
+        auto wavPath = PickInGameSoundVariant(baseFilename);
+        if (wavPath.empty()) {
+            // Fall back to the SKSE plugins directory
+            wavPath = PickRandomSoundVariant(baseFilename);
+            if (wavPath.empty()) {
+                logger::warn("[IN-GAME AUDIO] No WAV files found for '{}' in either "
+                             "Data/Sound/TimedBlockDodgeCounter/ or "
+                             "Data/SKSE/Plugins/TimedBlockDodgeCounter/", baseFilename);
+                return;
+            }
+            // File found in SKSE path but not in Sound path — warn user
+            logger::warn("[IN-GAME AUDIO] WAV '{}' found in SKSE/Plugins/ but NOT in "
+                         "Data/Sound/TimedBlockDodgeCounter/ — the game engine can only "
+                         "load sounds from Data/Sound/. Please copy/move your WAV files to "
+                         "Data/Sound/TimedBlockDodgeCounter/ for in-game audio to work.",
+                         baseFilename);
+            return;
+        }
+
+        // Compute relative path from Data/Sound/ for the BSResource::ID
+        // The engine resolves sound files relative to Data/Sound/
+        // wavPath: .../Data/Sound/TimedBlockDodgeCounter/timedblock_2.wav
+        // relPath needed: "TimedBlockDodgeCounter\timedblock_2.wav"
+        std::string relPath;
+        std::string wavStr = wavPath.string();
+        std::string wavLower = wavStr;
+        for (char& c : wavLower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+        size_t soundPos = wavLower.rfind("data\\sound\\");
+        if (soundPos == std::string::npos) {
+            soundPos = wavLower.rfind("data/sound/");
+        }
+        if (soundPos != std::string::npos) {
+            relPath = wavStr.substr(soundPos + 11);  // skip "data\sound\" or "data/sound/"
+        } else {
+            logger::error("[IN-GAME AUDIO] Cannot determine relative sound path from: {}", wavStr);
+            return;
+        }
+
+        RE::BSResource::ID resID = MakeResourceID(relPath);
+
+        logger::info("[IN-GAME AUDIO] Playing '{}' via donor {} | soundPath='{}' | "
+                     "dir=0x{:08X} file=0x{:08X}",
+            wavPath.filename().string(),
+            (slot == Slot::kTrigger) ? "A(trigger)" : "B(counter)",
+            relPath, resID.dir, resID.file);
+
+        // Swap the donor's soundFiles[0] to our file
+        RE::BSResource::ID originalID{};
+        bool hadOriginal = false;
+        if (!stdDef->soundFiles.empty()) {
+            originalID = stdDef->soundFiles[0];
+            stdDef->soundFiles[0] = resID;
+            hadOriginal = true;
+        } else {
+            stdDef->soundFiles.push_back(resID);
+        }
+
+        // Build sound handle from the donor descriptor
+        RE::BSSoundHandle handle{};
+        auto* audioMgr = RE::BSAudioManager::GetSingleton();
+        if (!audioMgr) {
+            logger::error("[IN-GAME AUDIO] BSAudioManager not available");
+            if (hadOriginal) stdDef->soundFiles[0] = originalID;
+            return;
+        }
+
+        // Flag 0x1A = 3D sound. Flag 0x12 = 2D (no spatialization).
+        // Use 0x1A and attach to player node for proper 3D with guaranteed audibility.
+        bool built = audioMgr->BuildSoundDataFromDescriptor(handle, donor->soundDescriptor, 0x1A);
+
+        // Restore the original immediately (sound data is already loaded into handle)
+        if (hadOriginal) {
+            stdDef->soundFiles[0] = originalID;
+        } else {
+            stdDef->soundFiles.clear();
+        }
+
+        if (!built || !handle.IsValid()) {
+            logger::error("[IN-GAME AUDIO] BuildSoundDataFromDescriptor FAILED for '{}' "
+                          "(built={}, valid={})", baseFilename, built, handle.IsValid());
+            return;
+        }
+
+        // Attach to the player's 3D node so the sound is always at the listener
+        auto* playerNode = player->Get3D();
+        if (playerNode) {
+            handle.SetObjectToFollow(playerNode);
+        } else {
+            handle.SetPosition(player->GetPosition());
+        }
+        handle.SetVolume(volume);
+        handle.Play();
+
+        logger::info("[IN-GAME AUDIO] Sound playing successfully: id={}, file='{}'",
+            handle.soundID, wavPath.filename().string());
+        spdlog::default_logger()->flush();
+    }
+}
+
 // Load WAV file into a NEW buffer and apply software volume adjustment.
 // Caller keeps the returned shared_ptr alive for at least as long as SND_ASYNC needs it.
 static std::shared_ptr<std::vector<uint8_t>> LoadWAVWithVolume(const std::filesystem::path& filePath, float volumeScale) {
@@ -1825,46 +2111,82 @@ static std::shared_ptr<std::vector<uint8_t>> LoadWAVWithVolume(const std::filesy
     return outBuffer;
 }
 
+// Pick a random sound variant from the plugin's sound directory.
+// Given a base filename like "counterstrike.wav", this checks for variants
+// named counterstrike_1.wav, counterstrike_2.wav, etc. and returns one at random.
+// If no variants exist, returns the base filename. If the base doesn't exist either,
+// returns an empty path.
+static std::filesystem::path PickRandomSoundVariant(const std::string& baseFilename)
+{
+    std::filesystem::path dir = std::filesystem::current_path();
+    dir /= "Data";
+    dir /= "SKSE";
+    dir /= "Plugins";
+    dir /= "TimedBlockDodgeCounter";
+
+    // Split baseFilename into stem + extension (e.g. "counterstrike" + ".wav")
+    std::filesystem::path basePath(baseFilename);
+    std::string stem = basePath.stem().string();
+    std::string ext  = basePath.extension().string();
+
+    std::vector<std::filesystem::path> candidates;
+
+    // Check the base file itself
+    std::filesystem::path baseFile = dir / baseFilename;
+    if (std::filesystem::exists(baseFile)) {
+        candidates.push_back(baseFile);
+    }
+
+    // Check numbered variants: stem_1.ext, stem_2.ext, ...
+    for (int i = 1; i <= 99; ++i) {
+        std::filesystem::path variant = dir / (stem + "_" + std::to_string(i) + ext);
+        if (std::filesystem::exists(variant)) {
+            candidates.push_back(variant);
+        } else {
+            break;
+        }
+    }
+
+    if (candidates.empty()) {
+        return {};
+    }
+    if (candidates.size() == 1) {
+        return candidates[0];
+    }
+
+    static thread_local std::mt19937 rng{ std::random_device{}() };
+    std::uniform_int_distribution<size_t> dist(0, candidates.size() - 1);
+    return candidates[dist(rng)];
+}
+
 void TimedBlockAddon::PlayCustomWavSound() {
-    // Build the path to the WAV file
-    // Path: Data/SKSE/Plugins/TimedBlockDodgeCounter/timedblock.wav
-    
     auto settings = Settings::GetSingleton();
     float volume = settings->fCustomWavVolume;
     
     SKSE::GetTaskInterface()->AddTask([volume]() {
-        std::filesystem::path wavPath = std::filesystem::current_path();
-        wavPath /= "Data";
-        wavPath /= "SKSE";
-        wavPath /= "Plugins";
-        wavPath /= "TimedBlockDodgeCounter";
-        wavPath /= "timedblock.wav";
-        
-        if (std::filesystem::exists(wavPath)) {
-            auto buf = LoadWAVWithVolume(wavPath, volume);
-            if (!buf) {
-                logger::error("Failed to load WAV file: {}", wavPath.string());
-                RE::PlaySound("UIMenuOK");
-                return;
-            }
-            g_timedBlockAudioBuffer = buf;
-            BOOL result = PlaySoundA(reinterpret_cast<LPCSTR>(buf->data()), 
-                                     NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
-            if (!result) {
-                logger::error("Failed to play WAV. Error: {}", GetLastError());
-                RE::PlaySound("UIMenuOK");
-            }
-        } else {
-            logger::warn("Custom WAV file not found: {}", wavPath.string());
+        auto wavPath = PickRandomSoundVariant("timedblock.wav");
+        if (wavPath.empty()) {
+            logger::warn("No timedblock WAV files found");
+            RE::PlaySound("UIMenuOK");
+            return;
+        }
+        auto buf = LoadWAVWithVolume(wavPath, volume);
+        if (!buf) {
+            logger::error("Failed to load WAV file: {}", wavPath.string());
+            RE::PlaySound("UIMenuOK");
+            return;
+        }
+        g_timedBlockAudioBuffer = buf;
+        BOOL result = PlaySoundA(reinterpret_cast<LPCSTR>(buf->data()), 
+                                 NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+        if (!result) {
+            logger::error("Failed to play WAV. Error: {}", GetLastError());
             RE::PlaySound("UIMenuOK");
         }
     });
 }
 
 void PlayCounterStrikeSound() {
-    // Build the path to the WAV file
-    // Path: Data/SKSE/Plugins/TimedBlockDodgeCounter/counterstrike.wav
-    
     auto settings = Settings::GetSingleton();
     if (!settings->bEnableCounterStrikeSound) {
         return;
@@ -1873,29 +2195,23 @@ void PlayCounterStrikeSound() {
     float volume = settings->fCounterStrikeSoundVolume;
     
     SKSE::GetTaskInterface()->AddTask([volume]() {
-        std::filesystem::path wavPath = std::filesystem::current_path();
-        wavPath /= "Data";
-        wavPath /= "SKSE";
-        wavPath /= "Plugins";
-        wavPath /= "TimedBlockDodgeCounter";
-        wavPath /= "counterstrike.wav";
-        
-        if (std::filesystem::exists(wavPath)) {
-            auto buf = LoadWAVWithVolume(wavPath, volume);
-            if (!buf) {
-                logger::error("Failed to load counter strike WAV file: {}", wavPath.string());
-                RE::PlaySound("NPCHumanCombatShieldBlock");
-                return;
-            }
-            g_counterStrikeAudioBuffer = buf;
-            BOOL result = PlaySoundA(reinterpret_cast<LPCSTR>(buf->data()), 
-                                     NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
-            if (!result) {
-                logger::error("Failed to play counter strike WAV. Error: {}", GetLastError());
-                RE::PlaySound("NPCHumanCombatShieldBlock");
-            }
-        } else {
-            logger::warn("Counter strike WAV file not found: {} - using fallback sound", wavPath.string());
+        auto wavPath = PickRandomSoundVariant("counterstrike.wav");
+        if (wavPath.empty()) {
+            logger::warn("No counterstrike WAV files found - using fallback");
+            RE::PlaySound("NPCHumanCombatShieldBlock");
+            return;
+        }
+        auto buf = LoadWAVWithVolume(wavPath, volume);
+        if (!buf) {
+            logger::error("Failed to load counter strike WAV: {}", wavPath.string());
+            RE::PlaySound("NPCHumanCombatShieldBlock");
+            return;
+        }
+        g_counterStrikeAudioBuffer = buf;
+        BOOL result = PlaySoundA(reinterpret_cast<LPCSTR>(buf->data()), 
+                                 NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+        if (!result) {
+            logger::error("Failed to play counter strike WAV. Error: {}", GetLastError());
             RE::PlaySound("NPCHumanCombatShieldBlock");
         }
     });
@@ -1906,28 +2222,22 @@ void TimedDodgeState::PlayDodgeSound() {
     float volume = settings->fTimedDodgeSoundVolume;
 
     SKSE::GetTaskInterface()->AddTask([volume]() {
-        std::filesystem::path wavPath = std::filesystem::current_path();
-        wavPath /= "Data";
-        wavPath /= "SKSE";
-        wavPath /= "Plugins";
-        wavPath /= "TimedBlockDodgeCounter";
-        wavPath /= "timeddodge.wav";
-
-        if (std::filesystem::exists(wavPath)) {
-            auto buf = LoadWAVWithVolume(wavPath, volume);
-            if (!buf) {
-                logger::error("Failed to load timed dodge WAV: {}", wavPath.string());
-                return;
-            }
-            g_timedDodgeAudioBuffer = buf;
-            BOOL result = PlaySoundA(reinterpret_cast<LPCSTR>(buf->data()),
-                                     NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
-            if (!result) {
-                logger::error("Failed to play timed dodge WAV. Error: {}", GetLastError());
-            }
-        } else {
-            logger::warn("Timed dodge WAV not found: {} - using fallback sound", wavPath.string());
+        auto wavPath = PickRandomSoundVariant("timeddodge.wav");
+        if (wavPath.empty()) {
+            logger::warn("No timeddodge WAV files found - using fallback");
             RE::PlaySound("UIMenuOK");
+            return;
+        }
+        auto buf = LoadWAVWithVolume(wavPath, volume);
+        if (!buf) {
+            logger::error("Failed to load timed dodge WAV: {}", wavPath.string());
+            return;
+        }
+        g_timedDodgeAudioBuffer = buf;
+        BOOL result = PlaySoundA(reinterpret_cast<LPCSTR>(buf->data()),
+                                 NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+        if (!result) {
+            logger::error("Failed to play timed dodge WAV. Error: {}", GetLastError());
         }
     });
 }
@@ -2328,6 +2638,13 @@ void CounterAttackState::OnRangedCounterInput()
         TimedDodgeState::End();
     }
     player->NotifyAnimationGraph("TKDodgeStop");
+    player->NotifyAnimationGraph("MCO_EndAnimation");
+    player->SetGraphVariableBool("bIsDodging", false);
+    player->SetGraphVariableBool("IsDodging", false);
+    player->SetGraphVariableBool("MCO_IsInRecovery", false);
+    player->SetGraphVariableBool("IsAttackReady", true);
+    player->SetGraphVariableBool("bAllowRotation", false);
+    player->SetGraphVariableInt("iState", 0);
 
     ApplyDamageBonus();
 
@@ -2336,13 +2653,15 @@ void CounterAttackState::OnRangedCounterInput()
     damageBonusEndTime = std::chrono::steady_clock::now() +
         std::chrono::milliseconds(static_cast<long long>(settings->fTimedDodgeCounterRangedWindowMs));
 
-    // Trigger the bow/crossbow draw animation on the next frame (same pattern as
-    // melee counter — the graph needs one tick after TKDodgeStop to leave the
-    // dodge state before an attack action can begin).
+    // Trigger the bow/crossbow draw on the next frame.
     RE::ActorHandle playerHandle = player->GetHandle();
     SKSE::GetTaskInterface()->AddTask([playerHandle]() {
         auto playerPtr = playerHandle.get();
         if (auto* p = playerPtr.get()) {
+            p->SetGraphVariableBool("IsAttackReady", true);
+            p->SetGraphVariableBool("bAllowRotation", false);
+            p->SetGraphVariableInt("iState", 0);
+
             using PerformAction_t = bool(RE::TESActionData*);
             REL::Relocation<PerformAction_t> performAction{ RELOCATION_ID(40551, 41557) };
 
@@ -2421,10 +2740,19 @@ void CounterAttackState::OnAttackInput()
             TimedDodgeState::End();
         }
         
-        // Cancel the dodge animation by sending TKDodgeStop — the same event
-        // the dodge clip fires near its end to trigger the idle transition
-        bool cancelled = player->NotifyAnimationGraph("TKDodgeStop");
-        logger::info("[COUNTER] Dodge cancel via TKDodgeStop: {}", cancelled);
+        // Cancel the dodge animation and force the behavior graph back to idle.
+        // MCO requires (IsAttackReady==1) && (bAllowRotation==0) for attack
+        // transitions — set these immediately alongside the state clears.
+        player->NotifyAnimationGraph("TKDodgeStop");
+        player->NotifyAnimationGraph("MCO_EndAnimation");
+        player->SetGraphVariableBool("bIsDodging", false);
+        player->SetGraphVariableBool("IsDodging", false);
+        player->SetGraphVariableBool("MCO_IsInRecovery", false);
+        player->SetGraphVariableBool("IsAttackReady", true);
+        player->SetGraphVariableBool("bAllowRotation", false);
+        player->SetGraphVariableInt("iState", 0);
+
+        logger::info("[COUNTER] Dodge cancel: TKDodgeStop + MCO_EndAnimation + state cleared");
         
         ApplyDamageBonus();
         
@@ -2442,14 +2770,15 @@ void CounterAttackState::OnAttackInput()
             logger::info("[COUNTER] Lunge disabled by bTimedDodgeCounterLunge setting");
         }
 
-        // Explicitly trigger the right-hand attack on the next frame.
-        // After TKDodgeStop the graph needs one tick to leave the dodge state;
-        // with weapon+spell combos the original button press doesn't propagate
-        // into an attack on its own (unlike weapon+empty/shield).
+        // Trigger the attack on the next frame after the graph has ticked.
         RE::ActorHandle playerHandle = player->GetHandle();
         SKSE::GetTaskInterface()->AddTask([playerHandle]() {
             auto playerPtr = playerHandle.get();
             if (auto* p = playerPtr.get()) {
+                p->SetGraphVariableBool("IsAttackReady", true);
+                p->SetGraphVariableBool("bAllowRotation", false);
+                p->SetGraphVariableInt("iState", 0);
+
                 using PerformAction_t = bool(RE::TESActionData*);
                 REL::Relocation<PerformAction_t> performAction{ RELOCATION_ID(40551, 41557) };
 
@@ -3105,30 +3434,49 @@ RE::BSEventNotifyControl CounterAttackInputHandler::ProcessEvent(
             continue;
         }
         
-        // Check standard Skyrim attack controls
+        // Check standard Skyrim attack controls.
+        // Prefer the engine-resolved userEvent (works correctly for gamepad,
+        // remapped controls, Steam Input, etc.). Fall back to ControlMap lookup
+        // only if the event's userEvent is empty.
         bool isAttackInput = false;
         bool isLeftHandInput = false;
-        auto* controlMap = RE::ControlMap::GetSingleton();
-        if (controlMap) {
-            std::string_view userEvent = controlMap->GetUserEventName(
-                buttonEvent->GetIDCode(), 
-                buttonEvent->GetDevice(), 
-                RE::ControlMap::InputContextID::kGameplay
-            );
-            
-            if (userEvent == "Right Attack/Block" || userEvent == "Attack" || userEvent == "Power Attack") {
-                isAttackInput = true;
-                isLeftHandInput = false;
-            } else if (userEvent == "Left Attack/Block") {
-                isAttackInput = true;
-                isLeftHandInput = true;
+        std::string_view userEvent = buttonEvent->QUserEvent();
+        if (userEvent.empty()) {
+            auto* controlMap = RE::ControlMap::GetSingleton();
+            if (controlMap) {
+                userEvent = controlMap->GetUserEventName(
+                    buttonEvent->GetIDCode(), 
+                    buttonEvent->GetDevice(), 
+                    RE::ControlMap::InputContextID::kGameplay
+                );
             }
+        }
+        if (userEvent == "Right Attack/Block"sv || userEvent == "Attack"sv || userEvent == "Power Attack"sv) {
+            isAttackInput = true;
+            isLeftHandInput = false;
+        } else if (userEvent == "Left Attack/Block"sv || userEvent == "Left Power Attack"sv) {
+            isAttackInput = true;
+            isLeftHandInput = true;
         }
         
         // Also check OneClickPowerAttack's custom power attack key (always right-hand)
         if (!isAttackInput && OCPAKeys::IsOCPAKey(buttonEvent)) {
             isAttackInput = true;
             isLeftHandInput = false;
+        }
+
+        // Fallback for alternate power attack mods that bind PA to non-standard
+        // mouse buttons (mouse 3/4/5+). These mods inject their own attack logic
+        // but the engine doesn't label the input with a user event we recognize.
+        // Only trigger if the button has NO user event bound (i.e., the engine
+        // doesn't know what it's for — only an injected mod would act on it).
+        if (!isAttackInput && settings->bAltPowerAttackFallback &&
+            buttonEvent->GetDevice() == RE::INPUT_DEVICE::kMouse) {
+            auto idCode = buttonEvent->GetIDCode();
+            if (idCode >= 2 && userEvent.empty()) {
+                isAttackInput = true;
+                isLeftHandInput = false;
+            }
         }
         
         if (isAttackInput) {
@@ -3182,6 +3530,13 @@ RE::BSEventNotifyControl CounterAttackInputHandler::ProcessEvent(
                     TimedDodgeState::End();
                 }
                 player->NotifyAnimationGraph("TKDodgeStop");
+                player->NotifyAnimationGraph("MCO_EndAnimation");
+                player->SetGraphVariableBool("bIsDodging", false);
+                player->SetGraphVariableBool("IsDodging", false);
+                player->SetGraphVariableBool("MCO_IsInRecovery", false);
+                player->SetGraphVariableBool("IsAttackReady", true);
+                player->SetGraphVariableBool("bAllowRotation", false);
+                player->SetGraphVariableInt("iState", 0);
                 CounterAttackState::ApplyDamageBonus(true);
                 CounterAttackState::OnSpellFired();
 
@@ -3232,7 +3587,10 @@ void CounterLungeState::Start(RE::Actor* player, RE::Actor* target)
     
     // Travel enough to reach stop distance, capped by the max lunge distance setting
     float desiredTravel = distance - meleeStop;
-    totalDistance = (std::min)(desiredTravel, settings->fCounterLungeDistance);
+    const float maxDist = CounterAttackState::fromTimedDodge
+        ? settings->fTimedDodgeCounterLungeDistance
+        : settings->fCounterLungeDistance;
+    totalDistance = (std::min)(desiredTravel, maxDist);
     
     const float lungeSpeed = CounterAttackState::fromTimedDodge ? settings->fTimedDodgeCounterLungeSpeed
                                                                 : settings->fCounterLungeSpeed;
@@ -3250,8 +3608,11 @@ void CounterLungeState::Start(RE::Actor* player, RE::Actor* target)
     int clampedCurve = curveType < 0 ? 0 : (curveType > 5 ? 5 : curveType);
     float peakFactor = curvePeaks[clampedCurve];
     
-    // duration chosen so peak velocity == lungeSpeed
-    duration = peakFactor * totalDistance / lungeSpeed;
+    // lungeSpeed is in the range [0.01, 1.0]. Scale it to a meaningful velocity
+    // in game units/s (0.05 → 500 u/s, giving ~0.45s for a 150-unit Bell lunge).
+    static constexpr float kLungeSpeedScale = 10000.0f;
+    float effectiveSpeed = lungeSpeed * kLungeSpeedScale;
+    duration = peakFactor * totalDistance / effectiveSpeed;
     if (duration < 0.05f) duration = 0.05f;
     if (duration > 2.0f)  duration = 2.0f;
     
@@ -3897,6 +4258,19 @@ void WardTimedBlockState::RegisterPrecision()
 			if (!attacker || attacker == player) return ret;
 
 			//------------------------------------------------------------
+			// 0) Attacker immunity — timed dodge or ward parry
+			//------------------------------------------------------------
+			if (TimedDodgeState::IsAttackerImmune(attacker) ||
+				WardTimedBlockState::IsAttackerImmune(attacker)) {
+				ret.bIgnoreHit = true;
+				if (settings->bDebugLogging) {
+					logger::info("[Precision] Attacker immunity: ignored hit from '{}'",
+						attacker->GetName());
+				}
+				return ret;
+			}
+
+			//------------------------------------------------------------
 			// 1) Ward timed block (unchanged)
 			//------------------------------------------------------------
 			if (settings->bEnableWardTimedBlock && inWindow) {
@@ -4127,12 +4501,36 @@ bool WardTimedBlockState::OnMeleeHit(RE::Actor* defender, RE::Actor* attacker)
 	// Successful parry — clear cooldown (consecutive ward parries are allowed, same rule as regular timed block).
 	onCooldown = false;
 
+	// Set attacker immunity
+	if (attacker && settings->fWardAttackerImmunity > 0.0f) {
+		immuneAttackerHandle = attacker->GetHandle();
+		immuneAttackerExpiry = std::chrono::steady_clock::now() + std::chrono::milliseconds(
+			static_cast<long long>(settings->fWardAttackerImmunity * 1000.0f));
+	}
+
 	if (settings->bDebugLogging) {
-		logger::info("[WARD TB] Melee parry — attacker='{}', dualCast={}, precision={}, cooldown CLEARED",
-			attacker ? attacker->GetName() : "?", isDualCast, g_precisionAvailable);
+		logger::info("[WARD TB] Melee parry — attacker='{}', dualCast={}, precision={}, cooldown CLEARED, immunity={}s",
+			attacker ? attacker->GetName() : "?", isDualCast, g_precisionAvailable,
+			settings->fWardAttackerImmunity);
 	}
 
 	return true;  // Parry consumed — Precision should ignore the hit
+}
+
+bool WardTimedBlockState::IsAttackerImmune(RE::Actor* attacker)
+{
+	if (!attacker) return false;
+	auto* settings = Settings::GetSingleton();
+	if (settings->fWardAttackerImmunity <= 0.0f) return false;
+
+	auto immunePtr = immuneAttackerHandle.get().get();
+	if (!immunePtr || immunePtr != attacker) return false;
+
+	if (std::chrono::steady_clock::now() >= immuneAttackerExpiry) {
+		immuneAttackerHandle = RE::ActorHandle{};
+		return false;
+	}
+	return true;
 }
 
 void WardTimedBlockState::PlayWardTimedBlockSound()
@@ -4145,27 +4543,21 @@ void WardTimedBlockState::PlayWardTimedBlockSound()
 	const std::string file = settings->sWardTimedBlockSoundFile;
 
 	SKSE::GetTaskInterface()->AddTask([vol, file]() {
-		std::filesystem::path wavPath = std::filesystem::current_path();
-		wavPath /= "Data";
-		wavPath /= "SKSE";
-		wavPath /= "Plugins";
-		wavPath /= "TimedBlockDodgeCounter";
-		wavPath /= file;
-
-		if (std::filesystem::exists(wavPath)) {
-			auto buf = LoadWAVWithVolume(wavPath, vol);
-			if (!buf) {
-				logger::error("[WARD TB] Failed to load WAV: {}", wavPath.string());
-				return;
-			}
-			g_wardTimedBlockAudioBuffer = buf;
-			const BOOL ok = PlaySoundA(reinterpret_cast<LPCSTR>(buf->data()),
-				NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
-			if (!ok) {
-				logger::error("[WARD TB] PlaySoundA failed for {}", wavPath.string());
-			}
-		} else {
-			logger::warn("[WARD TB] WAV not found: {}", wavPath.string());
+		auto wavPath = PickRandomSoundVariant(file);
+		if (wavPath.empty()) {
+			logger::warn("[WARD TB] No WAV files found for '{}'", file);
+			return;
+		}
+		auto buf = LoadWAVWithVolume(wavPath, vol);
+		if (!buf) {
+			logger::error("[WARD TB] Failed to load WAV: {}", wavPath.string());
+			return;
+		}
+		g_wardTimedBlockAudioBuffer = buf;
+		const BOOL ok = PlaySoundA(reinterpret_cast<LPCSTR>(buf->data()),
+			NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+		if (!ok) {
+			logger::error("[WARD TB] PlaySoundA failed for {}", wavPath.string());
 		}
 	});
 }
@@ -4180,27 +4572,21 @@ void WardTimedBlockState::PlayWardCounterSpellSound()
 	const std::string file = settings->sWardCounterSpellSoundFile;
 
 	SKSE::GetTaskInterface()->AddTask([vol, file]() {
-		std::filesystem::path wavPath = std::filesystem::current_path();
-		wavPath /= "Data";
-		wavPath /= "SKSE";
-		wavPath /= "Plugins";
-		wavPath /= "TimedBlockDodgeCounter";
-		wavPath /= file;
-
-		if (std::filesystem::exists(wavPath)) {
-			auto buf = LoadWAVWithVolume(wavPath, vol);
-			if (!buf) {
-				logger::error("[WARD COUNTER SPELL] Failed to load WAV: {}", wavPath.string());
-				return;
-			}
-			g_wardCounterSpellAudioBuffer = buf;
-			const BOOL ok = PlaySoundA(reinterpret_cast<LPCSTR>(buf->data()),
-				NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
-			if (!ok) {
-				logger::error("[WARD COUNTER SPELL] PlaySoundA failed for {}", wavPath.string());
-			}
-		} else {
-			logger::warn("[WARD COUNTER SPELL] WAV not found: {}", wavPath.string());
+		auto wavPath = PickRandomSoundVariant(file);
+		if (wavPath.empty()) {
+			logger::warn("[WARD COUNTER SPELL] No WAV files found for '{}'", file);
+			return;
+		}
+		auto buf = LoadWAVWithVolume(wavPath, vol);
+		if (!buf) {
+			logger::error("[WARD COUNTER SPELL] Failed to load WAV: {}", wavPath.string());
+			return;
+		}
+		g_wardCounterSpellAudioBuffer = buf;
+		const BOOL ok = PlaySoundA(reinterpret_cast<LPCSTR>(buf->data()),
+			NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+		if (!ok) {
+			logger::error("[WARD COUNTER SPELL] PlaySoundA failed for {}", wavPath.string());
 		}
 	});
 }
@@ -4555,6 +4941,47 @@ RE::BSEventNotifyControl CounterDamageHitHandler::ProcessEvent(
 // Timed Dodge State - Perfect dodge triggers slow-mo, i-frames, radial blur
 //=============================================================================
 
+void TimedDodgeState::InitCustomDodge()
+{
+    auto* dh = RE::TESDataHandler::GetSingleton();
+    if (!dh) return;
+
+    // CustomDodge.esp uses global Dodge_IsDodging at form 0x000D62
+    auto* form = dh->LookupForm(0x000D62, "CustomDodge.esp");
+    if (form) {
+        customDodgeGlobal = form->As<RE::TESGlobal>();
+        if (customDodgeGlobal) {
+            logger::info("[CUSTOM DODGE] Found Dodge_IsDodging global — integration active");
+        }
+    }
+    if (!customDodgeGlobal) {
+        logger::info("[CUSTOM DODGE] CustomDodge.esp not loaded or global not found — skipping");
+    }
+}
+
+void TimedDodgeState::PollCustomDodge()
+{
+    if (!customDodgeGlobal) return;
+
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player || !player->IsInCombat()) {
+        customDodgeWasActive = false;
+        return;
+    }
+
+    bool isDodging = (customDodgeGlobal->value != 0.0f);
+    if (isDodging && !customDodgeWasActive) {
+        auto* settings = Settings::GetSingleton();
+        if (settings->bEnableTimedDodge) {
+            if (settings->bDebugLogging) {
+                logger::info("[TIMED DODGE] Custom Dodge: Dodge_IsDodging 0→1, triggering dodge event");
+            }
+            OnAnimEvent("CustomDodge");
+        }
+    }
+    customDodgeWasActive = isDodging;
+}
+
 bool TimedDodgeState::IsDodgeEvent(const char* eventName)
 {
     if (!eventName) return false;
@@ -4566,6 +4993,7 @@ bool TimedDodgeState::IsDodgeEvent(const char* eventName)
         "SidestepTrigger",       // Ultimate Dodge (sidestep)
         "RollTrigger",           // Ultimate Dodge (roll)
         "DodgeStart",            // Generic dodge event
+        "CustomDodge",           // Custom Dodge plugin (polled via global)
     };
     
     for (const auto& evt : dodgeEvents) {

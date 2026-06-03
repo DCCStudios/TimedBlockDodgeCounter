@@ -49,6 +49,7 @@ void MessageHandler(SKSE::MessagingInterface::Message* message) noexcept {
             CounterDamageHitHandler::Register();
             
             TimedDodgeState::InitializeBlurIMOD();
+            TimedDodgeState::InitCustomDodge();
             
             Menu::Register();
             
