@@ -4989,6 +4989,7 @@ bool TimedDodgeState::IsDodgeEvent(const char* eventName)
     // Known dodge animation events from popular dodge mods
     static const char* dodgeEvents[] = {
         "MCO_DodgeInitiate",     // DMCO / MCO
+        "Dodge",                 // Dodge Framework (DMCO, Loki Dodge, etc.) — sent for all directions
         "TKDR_DodgeStart",       // TK Dodge RE
         "SidestepTrigger",       // Ultimate Dodge (sidestep)
         "RollTrigger",           // Ultimate Dodge (roll)
