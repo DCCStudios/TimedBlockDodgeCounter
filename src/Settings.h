@@ -259,6 +259,7 @@ public:
     bool bDebugScreenCounterAttack{ false };
     bool bDebugScreenWard{ false };
     bool bDebugScreenDodge{ false };
+    bool bShowStateOverlay{ false };
 
 private:
     Settings() = default;

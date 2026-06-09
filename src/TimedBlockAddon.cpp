@@ -2470,6 +2470,7 @@ void CounterAttackState::Update()
         if (!spellFiredDuringWindow) {
             fromWardTimedBlock = false;
         }
+        RemoveCounterKeyword();
 
         if (settings->bDebugLogging) {
             logger::info("[COUNTER] Counter attack window CLOSED (timed out)");
@@ -2601,6 +2602,8 @@ void CounterAttackState::OnSpellFired()
     spellFiredDuringWindow = true;
     trackedSpellProjectile = {};  // continuous scan in Update() will latch the projectile
 
+    ApplyCounterKeyword(false, true);
+
     // Close the melee input window — the player has committed to a spell counter.
     // Any further attack-button presses should cast more spells, not trigger a
     // melee counter sound/bonus.  The damage bonus stays open until the projectile
@@ -2676,6 +2679,8 @@ void CounterAttackState::OnRangedCounterInput()
             }
         }
     });
+
+    ApplyCounterKeyword(true, false);
 
     logger::info("[RANGED COUNTER] Initiated — draw speed buff active, {:.0f}ms window, scan delayed 300ms",
         settings->fTimedDodgeCounterRangedWindowMs);
@@ -2796,6 +2801,8 @@ void CounterAttackState::OnAttackInput()
 
         spdlog::default_logger()->flush();
         
+        ApplyCounterKeyword();
+
         if (settings->bDebugLogging) {
             logger::info("[COUNTER] Timed dodge counter attack executed");
             DebugNotify(DebugCategory::kDodge, "[TD] Counter attack!");
@@ -2847,6 +2854,8 @@ void CounterAttackState::OnAttackInput()
         ApplyDamageBonus();
     }
     
+    ApplyCounterKeyword();
+
     if (settings->bDebugLogging) {
         logger::info("[COUNTER] Attack input during counter window - timed block counter");
         DebugNotify(DebugCategory::kCounter, "[TB] Counter attack!");
@@ -2854,6 +2863,120 @@ void CounterAttackState::OnAttackInput()
     
     inWindow = false;
     fromWardTimedBlock = false;
+}
+
+bool CounterAttackState::CreateCounterAttackKeywords()
+{
+    if (counterAttackKeyword && rangedCounterKeyword && magicCounterKeyword) {
+        return true;
+    }
+
+    auto* factory = RE::IFormFactory::GetConcreteFormFactoryByType<RE::BGSKeyword>();
+    if (!factory) {
+        logger::error("[COUNTER KEYWORD] BGSKeyword form factory unavailable");
+        return false;
+    }
+
+    auto createKW = [&](RE::BGSKeyword*& kw, const char* editorID) -> bool {
+        if (kw) return true;
+        kw = factory->Create();
+        if (!kw) {
+            logger::error("[COUNTER KEYWORD] Failed to allocate BGSKeyword '{}'", editorID);
+            return false;
+        }
+        kw->formEditorID = editorID;
+        logger::info("[COUNTER KEYWORD] Created runtime keyword '{}' (FormID 0x{:08X})",
+            editorID, kw->GetFormID());
+        return true;
+    };
+
+    bool ok = true;
+    ok &= createKW(counterAttackKeyword, "STBL_CounterAttacking");
+    ok &= createKW(rangedCounterKeyword, "STBL_RangedCounterAttacking");
+    ok &= createKW(magicCounterKeyword, "STBL_MagicCounterAttacking");
+    return ok;
+}
+
+void CounterAttackState::ApplyCounterKeyword(bool ranged, bool magic)
+{
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) return;
+
+    auto* base = player->GetActorBase();
+    if (!base) return;
+
+    auto* kwForm = static_cast<RE::BGSKeywordForm*>(base);
+    if (!kwForm) return;
+
+    counterAttackAnimStarted = false;
+
+    if (counterAttackKeyword && !keywordApplied) {
+        kwForm->AddKeyword(counterAttackKeyword);
+        keywordApplied = true;
+        logger::info("[COUNTER KEYWORD] Applied STBL_CounterAttacking");
+    }
+    if (ranged && rangedCounterKeyword && !rangedKeywordApplied) {
+        kwForm->AddKeyword(rangedCounterKeyword);
+        rangedKeywordApplied = true;
+        logger::info("[COUNTER KEYWORD] Applied STBL_RangedCounterAttacking");
+    }
+    if (magic && magicCounterKeyword && !magicKeywordApplied) {
+        kwForm->AddKeyword(magicCounterKeyword);
+        magicKeywordApplied = true;
+        logger::info("[COUNTER KEYWORD] Applied STBL_MagicCounterAttacking");
+    }
+}
+
+void CounterAttackState::RemoveCounterKeyword()
+{
+    if (!keywordApplied && !rangedKeywordApplied && !magicKeywordApplied) {
+        return;
+    }
+
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) return;
+
+    auto* base = player->GetActorBase();
+    if (!base) return;
+
+    auto* kwForm = static_cast<RE::BGSKeywordForm*>(base);
+    if (!kwForm) return;
+
+    if (counterAttackKeyword && keywordApplied) {
+        kwForm->RemoveKeyword(counterAttackKeyword);
+        keywordApplied = false;
+        logger::info("[COUNTER KEYWORD] Removed STBL_CounterAttacking");
+    }
+    if (rangedCounterKeyword && rangedKeywordApplied) {
+        kwForm->RemoveKeyword(rangedCounterKeyword);
+        rangedKeywordApplied = false;
+        logger::info("[COUNTER KEYWORD] Removed STBL_RangedCounterAttacking");
+    }
+    if (magicCounterKeyword && magicKeywordApplied) {
+        kwForm->RemoveKeyword(magicCounterKeyword);
+        magicKeywordApplied = false;
+        logger::info("[COUNTER KEYWORD] Removed STBL_MagicCounterAttacking");
+    }
+    counterAttackAnimStarted = false;
+}
+
+void CounterAttackState::OnAnimEvent(const RE::BSFixedString& tag)
+{
+    if (!keywordApplied) return;
+
+    if (!counterAttackAnimStarted) {
+        if (tag == "attackStart" || tag == "AttackStart" ||
+            tag == "bashStart"  || tag == "BashStart") {
+            counterAttackAnimStarted = true;
+            logger::info("[COUNTER KEYWORD] Counter attack animation started ({})", tag.c_str());
+        }
+        return;
+    }
+
+    if (tag == "attackStop" || tag == "AttackStop") {
+        logger::info("[COUNTER KEYWORD] Counter attack animation ended — removing keywords");
+        RemoveCounterKeyword();
+    }
 }
 
 bool CounterAttackState::CreateCounterDamageForms()
@@ -3126,6 +3249,8 @@ void CounterAttackState::RemoveDamageBonus()
         RemoveDrawSpeedBuff();
         rangedCounterActive = false;
     }
+
+    RemoveCounterKeyword();
 
     logger::info("[COUNTER DAMAGE] Bonus cleared (was +{:.0f}%)", was);
     spdlog::default_logger()->flush();
@@ -3936,6 +4061,8 @@ void CounterSlowTimeState::End()
         static REL::Relocation<float*> gtm{ RELOCATION_ID(511883, 388443) };
         *gtm = 1.0f;
     });
+
+    CounterAttackState::RemoveCounterKeyword();
     
     if (settings->bDebugLogging) {
         logger::info("[COUNTER SLOWTIME] Ended");
@@ -4032,6 +4159,8 @@ RE::BSEventNotifyControl CounterAnimEventHandler::ProcessEvent(
     
     // Forward animation events to the counter slow time state
     CounterSlowTimeState::OnAnimEvent(a_event->tag.c_str());
+
+    CounterAttackState::OnAnimEvent(a_event->tag);
 
     // Detect spell fire during ward counter window so the damage bonus
     // persists until the projectile actually lands on an enemy.

@@ -77,6 +77,9 @@ void MessageHandler(SKSE::MessagingInterface::Message* message) noexcept {
             if (!CounterAttackState::CreateDrawSpeedForms()) {
                 logger::error("Failed to create draw-speed boost MGEF/spell");
             }
+            if (!CounterAttackState::CreateCounterAttackKeywords()) {
+                logger::error("Failed to create counter-attack keyword");
+            }
             
             CounterAnimEventHandler::Register();
             break;
@@ -96,6 +99,9 @@ void MessageHandler(SKSE::MessagingInterface::Message* message) noexcept {
             }
             if (!CounterAttackState::CreateDrawSpeedForms()) {
                 logger::error("Failed to create draw-speed boost MGEF/spell");
+            }
+            if (!CounterAttackState::CreateCounterAttackKeywords()) {
+                logger::error("Failed to create counter-attack keyword");
             }
             
             CounterAnimEventHandler::Register();

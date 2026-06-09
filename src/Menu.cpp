@@ -63,6 +63,7 @@ namespace Menu
         
         SKSEMenuFramework::SetSection("Timed Block Dodge and Counter");
         SKSEMenuFramework::AddSectionItem("Settings", RenderSettings);
+        stateOverlayWindow = SKSEMenuFramework::AddWindow(RenderStateOverlay);
         
         logger::info("SKSE Menu Framework menu registered");
     }
@@ -404,6 +405,9 @@ namespace Menu
             // --- Counter Attack ---
             ImGui::Spacing();
             if (ImGui::TreeNodeEx("Counter Attack##tb")) {
+
+                ImGui::TextColored(ImVec4(0.5f, 0.7f, 0.9f, 1.0f), "Keyword: STBL_CounterAttacking");
+                ImGui::Spacing();
 
                 if (ImGui::Checkbox("Prevent Player Stagger##tb", &settings->bPreventPlayerStagger)) {
                     State::MarkChanged();
@@ -982,6 +986,11 @@ namespace Menu
                 ImGui::Spacing();
                 if (ImGui::TreeNodeEx("Counter Attack##dodge")) {
 
+                    ImGui::TextColored(ImVec4(0.5f, 0.7f, 0.9f, 1.0f), "Keywords: STBL_CounterAttacking");
+                    ImGui::TextColored(ImVec4(0.5f, 0.7f, 0.9f, 1.0f), "  Ranged: STBL_RangedCounterAttacking");
+                    ImGui::TextColored(ImVec4(0.5f, 0.7f, 0.9f, 1.0f), "  Spell:  STBL_MagicCounterAttacking");
+                    ImGui::Spacing();
+
                     if (ImGui::Checkbox("Enable Counter Attack##dodge", &settings->bTimedDodgeCounterAttack)) {
                         State::MarkChanged();
                     }
@@ -1401,6 +1410,10 @@ namespace Menu
                 ImGui::Spacing();
                 if (ImGui::TreeNodeEx("Counter Attack##ward")) {
 
+                    ImGui::TextColored(ImVec4(0.5f, 0.7f, 0.9f, 1.0f), "Keywords: STBL_CounterAttacking");
+                    ImGui::TextColored(ImVec4(0.5f, 0.7f, 0.9f, 1.0f), "  Spell:  STBL_MagicCounterAttacking");
+                    ImGui::Spacing();
+
                     if (ImGui::Checkbox("Enable Ward Counter##ward", &settings->bWardTimedBlockCounterAttack)) {
                         State::MarkChanged();
                     }
@@ -1572,6 +1585,18 @@ namespace Menu
                 ImGui::Text("  Ignore Outside Range: %s", settings->bIgnoreCooldownOutsideRange ? "YES" : "NO");
                 ImGui::Text("  Detection Range: %.0f units", settings->fCooldownIgnoreDistance);
             }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            if (ImGui::Checkbox("Show State Tracker Overlay##dbg", &settings->bShowStateOverlay)) {
+                State::MarkChanged();
+                if (stateOverlayWindow) {
+                    stateOverlayWindow->IsOpen.store(settings->bShowStateOverlay);
+                }
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Shows a real-time overlay with the current state of all\nplugin systems: combat, blocking, timed block, timed dodge,\ncounter attack, ward, cooldowns, and more.");
+            }
         ImGui::EndTabItem();
         }
 
@@ -1614,5 +1639,120 @@ namespace Menu
             "Changes apply IMMEDIATELY to your current session.");
         ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), 
             "Use 'Save to INI' to keep changes after restarting the game.");
+    }
+
+    void __stdcall RenderStateOverlay()
+    {
+        auto* settings = Settings::GetSingleton();
+        if (!settings->bShowStateOverlay) {
+            if (stateOverlayWindow) {
+                stateOverlayWindow->IsOpen.store(false);
+            }
+            return;
+        }
+
+        if (stateOverlayWindow) {
+            stateOverlayWindow->IsOpen.store(true);
+        }
+
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) return;
+
+        ImVec2 windowPos = ImVec2(ImGui::GetIO()->DisplaySize.x - 350.0f, 10.0f);
+        ImGui::SetNextWindowPos(windowPos, ImGuiCond_Always, ImVec2(0.0f, 0.0f));
+        ImGui::SetNextWindowSize(ImVec2(340.0f, 0.0f), ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(0.7f);
+
+        ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+                                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                 ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
+
+        if (ImGui::Begin("##TBDCStateOverlay", nullptr, flags)) {
+            ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.8f, 1.0f), "TBDC State Tracker");
+            ImGui::Separator();
+
+            bool inCombat = player->IsInCombat();
+            bool isBlocking = Offsets::IsBlocking(player);
+            auto attackState = player->AsActorState()->GetAttackState();
+
+            auto stateColor = [](bool active) -> ImVec4 {
+                return active ? ImVec4(0.2f, 1.0f, 0.4f, 1.0f) : ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
+            };
+            auto warnColor = [](bool active) -> ImVec4 {
+                return active ? ImVec4(1.0f, 0.8f, 0.2f, 1.0f) : ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
+            };
+
+            ImGui::TextColored(stateColor(inCombat), "Combat: %s", inCombat ? "IN COMBAT" : "Out of Combat");
+            ImGui::TextColored(stateColor(isBlocking), "Blocking: %s", isBlocking ? "YES" : "No");
+            ImGui::Text("Attack State: %d", static_cast<int>(attackState));
+
+            auto* av = player->AsActorValueOwner();
+            if (av) {
+                float hp = av->GetActorValue(RE::ActorValue::kHealth);
+                float maxHp = av->GetPermanentActorValue(RE::ActorValue::kHealth);
+                float sp = av->GetActorValue(RE::ActorValue::kStamina);
+                float maxSp = av->GetPermanentActorValue(RE::ActorValue::kStamina);
+                ImGui::Text("HP: %.0f/%.0f  SP: %.0f/%.0f", hp, maxHp, sp, maxSp);
+            }
+
+            ImGui::Separator();
+
+            // Timed Block
+            ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Timed Block");
+            bool parryActive = CooldownState::GetParryEffectCached();
+            bool cooldownActive = CooldownState::IsOnCooldownInternal();
+            ImGui::TextColored(stateColor(parryActive), "  Parry Window: %s", parryActive ? "OPEN" : "Closed");
+            ImGui::TextColored(warnColor(cooldownActive), "  Cooldown: %s", cooldownActive ? "ON COOLDOWN" : "Ready");
+
+            // Counter Attack
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Counter Attack");
+            ImGui::TextColored(stateColor(CounterAttackState::inWindow), "  Window: %s", CounterAttackState::inWindow ? "OPEN" : "Closed");
+            if (CounterAttackState::inWindow) {
+                auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    CounterAttackState::windowEndTime - std::chrono::steady_clock::now()).count();
+                if (remaining > 0) ImGui::Text("  Remaining: %lldms", remaining);
+                ImGui::Text("  Source: %s%s",
+                    CounterAttackState::fromTimedDodge ? "Dodge" :
+                    CounterAttackState::fromWardTimedBlock ? "Ward" : "Block",
+                    CounterAttackState::spellFiredDuringWindow ? " (spell)" : "");
+            }
+            ImGui::TextColored(stateColor(CounterAttackState::damageBonusActive), "  Damage Bonus: %s",
+                CounterAttackState::damageBonusActive ? "ACTIVE" : "Inactive");
+            ImGui::TextColored(stateColor(CounterAttackState::keywordApplied), "  Keyword: %s",
+                CounterAttackState::keywordApplied ? "APPLIED" : "Not Applied");
+            ImGui::TextColored(stateColor(CounterAttackState::rangedKeywordApplied), "  Ranged KW: %s",
+                CounterAttackState::rangedKeywordApplied ? "APPLIED" : "Not Applied");
+            ImGui::TextColored(stateColor(CounterAttackState::magicKeywordApplied), "  Magic KW: %s",
+                CounterAttackState::magicKeywordApplied ? "APPLIED" : "Not Applied");
+            ImGui::TextColored(stateColor(CounterLungeState::active), "  Lunge: %s",
+                CounterLungeState::active ? "ACTIVE" : "Inactive");
+            ImGui::TextColored(stateColor(CounterSlowTimeState::active), "  Slow Time: %s",
+                CounterSlowTimeState::active ? "ACTIVE" : "Inactive");
+
+            // Timed Dodge
+            ImGui::Separator();
+            ImGui::TextColored(ImVec4(0.8f, 0.4f, 1.0f, 1.0f), "Timed Dodge");
+            ImGui::TextColored(stateColor(TimedDodgeState::active), "  Active: %s", TimedDodgeState::active ? "YES" : "No");
+            ImGui::TextColored(stateColor(TimedDodgeState::slomoActive), "  Slomo: %s", TimedDodgeState::slomoActive ? "YES" : "No");
+            ImGui::TextColored(stateColor(TimedDodgeState::iframesActive), "  I-Frames: %s", TimedDodgeState::iframesActive ? "YES" : "No");
+            ImGui::TextColored(warnColor(TimedDodgeState::onCooldown), "  Cooldown: %s", TimedDodgeState::onCooldown ? "ON COOLDOWN" : "Ready");
+            ImGui::TextColored(warnColor(TimedDodgeState::onDamageCooldown), "  Dmg Cooldown: %s", TimedDodgeState::onDamageCooldown ? "ON COOLDOWN" : "Ready");
+            ImGui::TextColored(warnColor(TimedDodgeState::onHitContactCooldown), "  Hit Cooldown: %s", TimedDodgeState::onHitContactCooldown ? "ON COOLDOWN" : "Ready");
+            ImGui::TextColored(stateColor(TimedDodgeState::pendingDodge), "  Pending: %s", TimedDodgeState::pendingDodge ? "YES" : "No");
+            ImGui::TextColored(stateColor(TimedDodgeState::inDodgeAnimation), "  In Dodge Anim: %s", TimedDodgeState::inDodgeAnimation ? "YES" : "No");
+
+            // Ward
+            ImGui::Separator();
+            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.8f, 1.0f), "Ward Timed Block");
+            ImGui::TextColored(stateColor(WardTimedBlockState::inWindow), "  Window: %s", WardTimedBlockState::inWindow ? "OPEN" : "Closed");
+            ImGui::TextColored(warnColor(WardTimedBlockState::onCooldown), "  Cooldown: %s", WardTimedBlockState::onCooldown ? "ON COOLDOWN" : "Ready");
+            ImGui::TextColored(stateColor(WardTimedBlockState::g_precisionAvailable), "  Precision: %s", WardTimedBlockState::g_precisionAvailable ? "Available" : "Not Available");
+
+            // Window Exclusion
+            ImGui::Separator();
+            ImGui::TextColored(warnColor(WindowExclusion::IsBlocked()), "Window Exclusion: %s", WindowExclusion::IsBlocked() ? "BLOCKED" : "Clear");
+        }
+        ImGui::End();
     }
 }

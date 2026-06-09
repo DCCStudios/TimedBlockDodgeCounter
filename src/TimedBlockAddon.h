@@ -304,6 +304,19 @@ namespace CounterAttackState
     bool CreateCounterDamageForms();
     bool CreateDrawSpeedForms();
 
+    // Runtime keywords applied during counter attacks
+    inline RE::BGSKeyword* counterAttackKeyword{ nullptr };
+    inline RE::BGSKeyword* rangedCounterKeyword{ nullptr };
+    inline RE::BGSKeyword* magicCounterKeyword{ nullptr };
+    inline bool keywordApplied{ false };
+    inline bool rangedKeywordApplied{ false };
+    inline bool magicKeywordApplied{ false };
+    inline bool counterAttackAnimStarted{ false };
+    bool CreateCounterAttackKeywords();
+    void ApplyCounterKeyword(bool ranged = false, bool magic = false);
+    void RemoveCounterKeyword();
+    void OnAnimEvent(const RE::BSFixedString& tag);
+
     void StartWindow(RE::Actor* attacker = nullptr);
     void StartWardWindow(RE::Actor* attacker = nullptr);
     void OnSpellFired();

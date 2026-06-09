@@ -208,6 +208,7 @@ void Settings::LoadSettings() {
     bDebugScreenCounterAttack = ini.GetBoolValue("Log", "DebugScreenCounterAttack", false);
     bDebugScreenWard = ini.GetBoolValue("Log", "DebugScreenWard", false);
     bDebugScreenDodge = ini.GetBoolValue("Log", "DebugScreenDodge", false);
+    bShowStateOverlay = ini.GetBoolValue("Debug", "bShowStateOverlay", false);
 
     if (bDebugLogging) {
         spdlog::set_level(spdlog::level::debug);
@@ -489,6 +490,7 @@ void Settings::SaveSettings() {
     ini.SetBoolValue("Log", "DebugScreenCounterAttack", bDebugScreenCounterAttack);
     ini.SetBoolValue("Log", "DebugScreenWard", bDebugScreenWard);
     ini.SetBoolValue("Log", "DebugScreenDodge", bDebugScreenDodge);
+    ini.SetBoolValue("Debug", "bShowStateOverlay", bShowStateOverlay);
 
     ini.SetValue("Forms", "PerkModName", sFormsPerkPluginName.c_str());
     ini.SetValue("Forms", "TimedBlockPerk", sFormsDamagePreventPerkID.c_str());
