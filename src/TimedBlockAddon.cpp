@@ -2974,8 +2974,12 @@ void CounterAttackState::OnAnimEvent(const RE::BSFixedString& tag)
     }
 
     if (tag == "attackStop" || tag == "AttackStop") {
-        logger::info("[COUNTER KEYWORD] Counter attack animation ended — removing keywords");
-        RemoveCounterKeyword();
+        if (damageBonusActive) {
+            logger::info("[COUNTER KEYWORD] attackStop fired but damage bonus still active — deferring keyword removal to hit/timeout");
+        } else {
+            logger::info("[COUNTER KEYWORD] Counter attack animation ended — removing keywords");
+            RemoveCounterKeyword();
+        }
     }
 }
 
@@ -4062,7 +4066,9 @@ void CounterSlowTimeState::End()
         *gtm = 1.0f;
     });
 
-    CounterAttackState::RemoveCounterKeyword();
+    if (!CounterAttackState::damageBonusActive) {
+        CounterAttackState::RemoveCounterKeyword();
+    }
     
     if (settings->bDebugLogging) {
         logger::info("[COUNTER SLOWTIME] Ended");
@@ -5393,6 +5399,18 @@ void TimedDodgeState::Update()
     // Expire the hit-during-dodge window
     if (inDodgeAnimation && std::chrono::steady_clock::now() >= dodgeAnimationExpiry) {
         inDodgeAnimation = false;
+    }
+
+    // Expire cooldowns so the state tracker (and any other reader) stays accurate
+    auto nowCD = std::chrono::steady_clock::now();
+    if (onCooldown && nowCD >= cooldownEndTime) {
+        onCooldown = false;
+    }
+    if (onDamageCooldown && nowCD >= damageCooldownEndTime) {
+        onDamageCooldown = false;
+    }
+    if (onHitContactCooldown && nowCD >= hitContactCooldownEndTime) {
+        onHitContactCooldown = false;
     }
     
     // Check pending early-dodge buffer
