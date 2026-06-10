@@ -40,6 +40,9 @@ void Settings::LoadSettings() {
     sExplosionPluginName = ini.GetValue("Forms", "ExplosionModName", "");
     sExplosionFormID = ini.GetValue("Forms", "ExplosionFormID", "");
     
+    // Master toggle
+    bEnableTimedBlock = ini.GetBoolValue("TimedBlock", "bEnableTimedBlock", true);
+
     // Load Hitstop settings (freezes attacker only, not the world!)
     bEnableHitstop = ini.GetBoolValue("Hitstop", "bEnableHitstop", true);
     fHitstopSpeed = static_cast<float>(ini.GetDoubleValue("Hitstop", "fHitstopSpeed", 0.05));
@@ -262,6 +265,7 @@ void Settings::LoadSettings() {
     fWardDmgReduction = std::clamp(fWardDmgReduction, 0.0f, 100.0f);
     
     logger::info("Settings loaded successfully");
+    logger::info("  TimedBlock: {}", bEnableTimedBlock);
     logger::info("  ParryWindow: {}ms", fParryWindowDurationMs);
     logger::info("  Hitstop: {} (speed={}, duration={}s)", bEnableHitstop, fHitstopSpeed, fHitstopDuration);
     logger::info("  Stagger: {} (normal={}, power={})", bEnableStagger, fStaggerMagnitude, fPowerAttackStaggerMagnitude);
@@ -329,6 +333,9 @@ void Settings::SaveSettings() {
     ini.SetBoolValue("", "bEnableExplosion", bEnableExplosion);
     ini.SetDoubleValue("", "fParryWindowDurationMs", fParryWindowDurationMs);  // Also save to root for original mod
     
+    // Master toggle
+    ini.SetBoolValue("TimedBlock", "bEnableTimedBlock", bEnableTimedBlock);
+
     // Save Hitstop settings
     ini.SetBoolValue("Hitstop", "bEnableHitstop", bEnableHitstop);
     ini.SetDoubleValue("Hitstop", "fHitstopSpeed", fHitstopSpeed);

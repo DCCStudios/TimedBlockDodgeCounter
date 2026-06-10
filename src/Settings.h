@@ -8,6 +8,11 @@ public:
     void SaveSettings();
     
     //==========================================================================
+    // Master toggle for timed block
+    //==========================================================================
+    bool  bEnableTimedBlock{ true };
+
+    //==========================================================================
     // Hitstop Settings - Freezes attacker's animation (NOT the whole world!)
     //==========================================================================
     bool  bEnableHitstop{ true };

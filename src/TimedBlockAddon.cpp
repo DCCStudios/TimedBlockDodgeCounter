@@ -495,7 +495,7 @@ void CooldownState::Update()
     blockedByActiveCooldown = false;
     parryEffectCachedThisFrame = false;
 
-    if (player && addon && addon->HasParryFormsReady()) {
+    if (settings->bEnableTimedBlock && player && addon && addon->HasParryFormsReady()) {
         const bool currentlyBlocking = Offsets::IsBlocking(player);
         if (currentlyBlocking && !wasBlockingLastFrame) {
             if (!WindowExclusion::IsBlocked() && !addon->ActorHasParryWindowEffect(player)) {

@@ -90,6 +90,17 @@ namespace Menu
         // ===== TIMED BLOCK =====
         if (ImGui::BeginTabItem("Timed Block")) {
 
+            if (ImGui::Checkbox("Enable Timed Block", &settings->bEnableTimedBlock)) {
+                State::MarkChanged();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Master toggle for the timed block system.\nWhen disabled, blocking will not open a parry window.");
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
             // --- Timing ---
             if (ImGui::TreeNodeEx("Timing##tb", ImGuiTreeNodeFlags_DefaultOpen)) {
 
@@ -105,13 +116,6 @@ namespace Menu
                     ImGui::SetTooltip("How long the parry window stays open after pressing block.\nSmaller values demand tighter reflexes; larger values are forgiving.\n\n150ms = challenging (default)\n300ms = moderate\n500ms+ = very easy");
                 }
 
-                if (ImGui::InputText("Block Key##tb", State::blockKeyBuffer, sizeof(State::blockKeyBuffer))) {
-                    settings->sBlockKey = State::blockKeyBuffer;
-                    State::MarkChanged();
-                }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Alternate block key for dual-wield or other setups.\nUse an SKSE key name (e.g. V, LShift) or decimal unified key code.\n\nOnly needed if you can't use the normal block key.");
-                }
 
                 if (ImGui::Checkbox("Shield Only##tb", &settings->bOnlyWithShield)) {
                     State::MarkChanged();
@@ -702,7 +706,7 @@ namespace Menu
             ImGui::Spacing();
             if (ImGui::TreeNodeEx("Requirements & Forms##tb")) {
 
-                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.5f, 1.0f), "Advanced: perk requirements and form lookups");
+                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.5f, 1.0f), "Perk-lock timed block features behind specific perks");
                 ImGui::Spacing();
 
                 if (ImGui::Checkbox("Perk-Locked Damage Prevention##tb", &settings->bPerkLockedBlock)) {
@@ -721,34 +725,207 @@ namespace Menu
 
                 ImGui::Spacing();
                 ImGui::Separator();
-                ImGui::Text("Perk Forms");
+                ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.6f, 1.0f), "Perk Selection");
+                ImGui::TextDisabled("Pick perks from loaded plugins or enter manually");
+                ImGui::Spacing();
 
-                if (ImGui::InputText("Perk Plugin Name##tb", State::formsPerkPluginBuffer, sizeof(State::formsPerkPluginBuffer))) {
-                    settings->sFormsPerkPluginName = State::formsPerkPluginBuffer;
-                    State::MarkChanged();
+                // --- Perk Picker State ---
+                static int selectedPluginIdx = 0;
+                static std::vector<std::string> pluginNames;
+                static std::vector<std::pair<RE::FormID, std::string>> perkList;
+                static bool needRefresh = true;
+                static char pluginFilter[128] = "";
+                static char perkFilter[128] = "";
+                static int selectedPerkIdx = 0;
+
+                if (needRefresh) {
+                    pluginNames.clear();
+                    auto* dh = RE::TESDataHandler::GetSingleton();
+                    if (dh) {
+                        for (auto* file : dh->files) {
+                            if (file && file->fileName[0]) {
+                                pluginNames.push_back(file->fileName);
+                            }
+                        }
+                    }
+                    needRefresh = false;
+                    selectedPluginIdx = 0;
+                    perkList.clear();
+                    pluginFilter[0] = '\0';
+                    perkFilter[0] = '\0';
                 }
+
+                if (ImGui::Button("Refresh Plugins##tbPerk")) needRefresh = true;
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("ESP/ESM/ESL filename containing the perk forms.\nExample: Skyrim.esm, MyMod.esp");
+                    ImGui::SetTooltip("Re-scan loaded plugins");
                 }
-                if (ImGui::InputText("Damage Perk FormID (hex)##tb", State::formsDamagePerkBuffer, sizeof(State::formsDamagePerkBuffer))) {
-                    settings->sFormsDamagePreventPerkID = State::formsDamagePerkBuffer;
+
+                if (!pluginNames.empty()) {
+                    int prevPlugin = selectedPluginIdx;
+                    const char* pluginPreview = (selectedPluginIdx >= 0 && selectedPluginIdx < static_cast<int>(pluginNames.size()))
+                        ? pluginNames[static_cast<std::size_t>(selectedPluginIdx)].c_str() : "";
+                    ImGui::SetNextItemWidth(250.0f);
+                    if (ImGui::BeginCombo("Plugin##tbPerk", pluginPreview)) {
+                        ImGui::SetNextItemWidth(-FLT_MIN);
+                        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+                        ImGui::InputTextWithHint("##tbPluginSearch", "Search...", pluginFilter, sizeof(pluginFilter));
+                        for (int i = 0; i < static_cast<int>(pluginNames.size()); ++i) {
+                            if (pluginFilter[0]) {
+                                bool match = false;
+                                const char* hay = pluginNames[static_cast<std::size_t>(i)].c_str();
+                                const char* needle = pluginFilter;
+                                for (const char* h = hay; *h; ++h) {
+                                    const char* a = h;
+                                    const char* b = needle;
+                                    while (*a && *b && ((*a | 32) == (*b | 32))) { ++a; ++b; }
+                                    if (!*b) { match = true; break; }
+                                }
+                                if (!match) continue;
+                            }
+                            const bool selected = (i == selectedPluginIdx);
+                            if (ImGui::Selectable(pluginNames[static_cast<std::size_t>(i)].c_str(), selected)) {
+                                selectedPluginIdx = i;
+                            }
+                            if (selected) ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Choose the .esp/.esm/.esl containing your perks (type to filter)");
+                    }
+
+                    if (selectedPluginIdx != prevPlugin || perkList.empty()) {
+                        perkList.clear();
+                        selectedPerkIdx = 0;
+                        perkFilter[0] = '\0';
+                        if (selectedPluginIdx >= 0 && selectedPluginIdx < static_cast<int>(pluginNames.size())) {
+                            auto* dh = RE::TESDataHandler::GetSingleton();
+                            if (dh) {
+                                const auto& pname = pluginNames[static_cast<std::size_t>(selectedPluginIdx)];
+                                for (auto* perk : dh->GetFormArray<RE::BGSPerk>()) {
+                                    if (!perk) continue;
+                                    auto* srcFile = perk->GetFile(0);
+                                    if (!srcFile || pname != srcFile->fileName) continue;
+                                    RE::FormID localID = perk->GetLocalFormID();
+                                    const char* edid = perk->GetFormEditorID();
+                                    std::string label;
+                                    if (edid && edid[0]) {
+                                        char buf[16]; snprintf(buf, sizeof(buf), "0x%X", localID);
+                                        label = std::string(edid) + " (" + buf + ")";
+                                    } else {
+                                        label = perk->GetName();
+                                        if (label.empty()) label = "(unnamed)";
+                                        char buf[16]; snprintf(buf, sizeof(buf), "0x%X", localID);
+                                        label += " (" + std::string(buf) + ")";
+                                    }
+                                    perkList.push_back({ localID, label });
+                                }
+                            }
+                        }
+                    }
+
+                    if (!perkList.empty()) {
+                        const char* perkPreview = (selectedPerkIdx >= 0 && selectedPerkIdx < static_cast<int>(perkList.size()))
+                            ? perkList[static_cast<std::size_t>(selectedPerkIdx)].second.c_str() : "";
+                        ImGui::SetNextItemWidth(300.0f);
+                        if (ImGui::BeginCombo("Perk##tbPick", perkPreview)) {
+                            ImGui::SetNextItemWidth(-FLT_MIN);
+                            if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+                            ImGui::InputTextWithHint("##tbPerkSearch", "Search...", perkFilter, sizeof(perkFilter));
+                            for (int i = 0; i < static_cast<int>(perkList.size()); ++i) {
+                                if (perkFilter[0]) {
+                                    bool match = false;
+                                    const char* hay = perkList[static_cast<std::size_t>(i)].second.c_str();
+                                    const char* needle = perkFilter;
+                                    for (const char* h = hay; *h; ++h) {
+                                        const char* a = h;
+                                        const char* b = needle;
+                                        while (*a && *b && ((*a | 32) == (*b | 32))) { ++a; ++b; }
+                                        if (!*b) { match = true; break; }
+                                    }
+                                    if (!match) continue;
+                                }
+                                const bool selected = (i == selectedPerkIdx);
+                                if (ImGui::Selectable(perkList[static_cast<std::size_t>(i)].second.c_str(), selected)) {
+                                    selectedPerkIdx = i;
+                                }
+                                if (selected) ImGui::SetItemDefaultFocus();
+                            }
+                            ImGui::EndCombo();
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("Select a perk from the chosen plugin (type to filter)");
+                        }
+
+                        ImGui::Spacing();
+                        if (ImGui::Button("Set as Damage Perk##tb")) {
+                            if (selectedPerkIdx >= 0 && selectedPerkIdx < static_cast<int>(perkList.size())) {
+                                settings->sFormsPerkPluginName = pluginNames[static_cast<std::size_t>(selectedPluginIdx)];
+                                char idBuf[32];
+                                snprintf(idBuf, sizeof(idBuf), "%X", perkList[static_cast<std::size_t>(selectedPerkIdx)].first);
+                                settings->sFormsDamagePreventPerkID = idBuf;
+                                strncpy_s(State::formsPerkPluginBuffer, settings->sFormsPerkPluginName.c_str(), sizeof(State::formsPerkPluginBuffer) - 1);
+                                strncpy_s(State::formsDamagePerkBuffer, idBuf, sizeof(State::formsDamagePerkBuffer) - 1);
+                                State::MarkChanged();
+                                TimedBlockAddon::GetSingleton()->LoadPerkForms();
+                            }
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("Use the selected perk for damage prevention gating");
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Set as Stagger Perk##tb")) {
+                            if (selectedPerkIdx >= 0 && selectedPerkIdx < static_cast<int>(perkList.size())) {
+                                settings->sFormsPerkPluginName = pluginNames[static_cast<std::size_t>(selectedPluginIdx)];
+                                char idBuf[32];
+                                snprintf(idBuf, sizeof(idBuf), "%X", perkList[static_cast<std::size_t>(selectedPerkIdx)].first);
+                                settings->sFormsStaggerPerkID = idBuf;
+                                strncpy_s(State::formsPerkPluginBuffer, settings->sFormsPerkPluginName.c_str(), sizeof(State::formsPerkPluginBuffer) - 1);
+                                strncpy_s(State::formsStaggerPerkBuffer, idBuf, sizeof(State::formsStaggerPerkBuffer) - 1);
+                                State::MarkChanged();
+                                TimedBlockAddon::GetSingleton()->LoadPerkForms();
+                            }
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("Use the selected perk for stagger gating");
+                        }
+                    } else if (selectedPluginIdx >= 0 && selectedPluginIdx < static_cast<int>(pluginNames.size())) {
+                        ImGui::TextDisabled("No perks found in selected plugin");
+                    }
+                }
+
+                // Show current assignments
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.6f, 1.0f, 0.6f, 1.0f), "Current Assignments:");
+                ImGui::Text("  Plugin: %s", settings->sFormsPerkPluginName.empty() ? "(none)" : settings->sFormsPerkPluginName.c_str());
+                ImGui::Text("  Damage Perk: %s", settings->sFormsDamagePreventPerkID.empty() ? "(none)" : settings->sFormsDamagePreventPerkID.c_str());
+                ImGui::Text("  Stagger Perk: %s", settings->sFormsStaggerPerkID.empty() ? "(none)" : settings->sFormsStaggerPerkID.c_str());
+
+                ImGui::Spacing();
+                if (ImGui::Button("Clear Damage Perk##tb")) {
+                    settings->sFormsDamagePreventPerkID.clear();
+                    State::formsDamagePerkBuffer[0] = '\0';
                     State::MarkChanged();
-                }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Hexadecimal FormID of the perk required for damage prevention.\nExample: 000C44BB");
-                }
-                if (ImGui::InputText("Stagger Perk FormID (hex)##tb", State::formsStaggerPerkBuffer, sizeof(State::formsStaggerPerkBuffer))) {
-                    settings->sFormsStaggerPerkID = State::formsStaggerPerkBuffer;
-                    State::MarkChanged();
-                }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Hexadecimal FormID of the perk required for stagger.\nExample: 000C44BC");
-                }
-                if (ImGui::Button("Reload Perk Forms##tb")) {
                     TimedBlockAddon::GetSingleton()->LoadPerkForms();
                 }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Hot-reload perk forms from the plugin without restarting.");
+                ImGui::SameLine();
+                if (ImGui::Button("Clear Stagger Perk##tb")) {
+                    settings->sFormsStaggerPerkID.clear();
+                    State::formsStaggerPerkBuffer[0] = '\0';
+                    State::MarkChanged();
+                    TimedBlockAddon::GetSingleton()->LoadPerkForms();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Clear All##tb")) {
+                    settings->sFormsPerkPluginName.clear();
+                    settings->sFormsDamagePreventPerkID.clear();
+                    settings->sFormsStaggerPerkID.clear();
+                    State::formsPerkPluginBuffer[0] = '\0';
+                    State::formsDamagePerkBuffer[0] = '\0';
+                    State::formsStaggerPerkBuffer[0] = '\0';
+                    State::MarkChanged();
+                    TimedBlockAddon::GetSingleton()->LoadPerkForms();
                 }
 
                 ImGui::TreePop();
